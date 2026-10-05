@@ -88,9 +88,9 @@ treehouse destroy           # remove worktrees from the pool (safely by default)
   state untouched — use it to attach to a worktree another agent is using.
 - `return --force` cleans and resets without prompting.
 
-### Base branch: always development
+### Base branch: always development if exist
 
-Every child starts from the latest `development` base. Do **not** switch a
+Every child starts from the latest `development` base if exists. In case it doesn't exists use the default branch. Do **not** switch a
 pooled worktree directly to `development`: the main checkout commonly
 already owns that branch, and Git forbids checking it out in two linked
 worktrees. Instead, create a unique task branch from it:
@@ -289,20 +289,20 @@ land / retire, branch cleanup), and talk to you. It must not pick up a task
 — or a question — itself; the sole
 exception is the last row of the routing table below.
 
-**The atomic-specs flow must be done EXCLUSIVELY by the children.** You launch a child with the user's input and delegate to it the FULL flow: from atomic specs (Gherkin/design), through implementation (per the `implement` skill), to a code audit (code-auditor). The child goes back to you ONLY when it needs the user's input or when it has completed the full task through to opening a PR. Your job is ONLY to manage child task assignments and handle child feedback (whether a question for the user or a finished task report).
+**The new-feature-fix flow must be done EXCLUSIVELY by the children.** You launch a child with the user's input and delegate to it the FULL flow: from atomic specs (Gherkin/design), through implementation (per the `implement` skill), to a code audit (code-auditor). The child goes back to you ONLY when it needs the user's input or when it has completed the full task through to opening a PR. Your job is ONLY to manage child task assignments and handle child feedback (whether a question for the user or a finished task report).
 
 **Do not spell that flow out in a brief** — the child takes it from the
 project's own `AGENTS.md`; a brief only says *what* is required (and, at most,
-"follow the `atomic-specs` flow per this repo's AGENTS.md").
+"follow the `new-feature-fix` flow per this repo's AGENTS.md").
 
-**Exception — plain-text docs skip atomic-specs.** When the task only
+**Exception — plain-text docs skip new-feature-fix.** When the task only
 edits plain-text documentation (README, Markdown guides, AGENTS.md-style
-operational docs, comments-as-docs), do **not** apply the atomic-specs
+operational docs, comments-as-docs), do **not** apply the new-feature-fix
 flow: no Gherkin scenarios, no `[REQ-n]` chain, no design doc, no
 `implement` skill round, no code-auditor pass. Spawn the child with a
 direct brief (what to write, what to verify against, existing doc tests
 still green if the repo has them) and let it deliver straight to a PR.
-Reserve the full atomic-specs flow for code and behaviour changes.
+Reserve the full new-feature-fix flow for code and behaviour changes.
 
 Routing rule for every incoming message:
 
@@ -372,14 +372,21 @@ The levels live in `config.json` at the repository root — a generic,
 root-level config file that is ready for future general settings: the
 levels are namespaced under its `taskLevels` top-level section, and sibling
 top-level keys hold any future setting without touching the level
-resolution code (unknown keys are ignored). Edit it to retune; these are
-the initial values:
+resolution code (unknown keys are ignored). Edit it to retune.
 
-| Level | When to use | Model | Thinking |
-|---|---|---|---|
-| `easy` | chores, trims, config/docs edits, small fixes | `opencode-zen-free/mimo-v2.6-flash-free` | `high` |
-| `standard` (default) | features / bug fixes with the full specs flow | `opencode-go/deepseek-v4.1-flash` | `medium` |
-| `hard` | architecture, root-cause analysis, long-haul work | `opencode-go/deepseek-v4.1-flash` | `max` |
+**`config.json` is the single source of truth for the level → model and
+level → thinking mappings: this file names no models and no thinking
+levels.** Only the levels themselves are described here:
+
+| Level | When to use |
+|---|---|
+| `easy` | chores, trims, config/docs edits, small fixes |
+| `standard` (default) | features / bug fixes with the full specs flow |
+| `hard` | architecture, root-cause analysis, long-haul work |
+
+For what model and thinking each level (or `taskLevels.default`) resolves
+to, read — and retune — `config.json`; never copy those values into a
+brief or into this file.
 
 Pick the level when writing the brief and pass it at spawn:
 
@@ -395,8 +402,9 @@ inherits `defaultThinkingLevel` / `modelThinkingLevels` / `defaultProjectTrust`
 from the global pi settings instead — no config problem can break a spawn.
 Spec: `specs/child-task-levels/`, tests: `tests/task-levels.test.sh`.
 
-**Free-provider fallback.** The free provider behind `easy`
-(`opencode-zen-free/mimo-v2.6-flash-free`) can exhaust its quota and answer
+**Free-provider fallback.** The free provider mapped to `easy` (whatever
+`taskLevels.levels.easy.model` currently names in `config.json`) can exhaust
+its quota and answer
 every request with `FreeUsageLimitError` (HTTP 429); pi treats that error as
 terminal (no retry), so the child stalls. A second free-provider rejection
 wedges a child the same way: pi's compaction/summarization calls answered
@@ -689,12 +697,12 @@ is ambiguous, the **report path** if it should differ from the default
 external identifier.
 
 **Briefs never spell out the process flow** (user directive, 2026-10-02):
-do not copy the atomic-specs → implement → code-auditor steps — or any other
+do not copy the new-feature-fix → implement → code-auditor steps — or any other
 process description — into `tmp/pi-sub/tasks/<task>.md`. The child gets the
 flow from the **project's own `AGENTS.md`**, which it reads at startup; the
 brief carries only the *what*: the requirement/issue, context/constraints, and
 deliverables (branch, PR, report path). One line suffices — e.g. *"Follow the
-`atomic-specs` flow per this repo's AGENTS.md."* Never re-derive in a brief a
+`new-feature-fix` flow per this repo's AGENTS.md."* Never re-derive in a brief a
 process the repo already documents.
 
 ### Referring to a subsession
