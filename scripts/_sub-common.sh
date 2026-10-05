@@ -80,6 +80,30 @@ wt_for_task() { # $1=task $2=repo-root
 
 branch_exists() { git -C "$1" show-ref --verify --quiet "refs/heads/$2"; }
 
+# Echo the ref a new task branch is based on for the repo at $1, and die when
+# there is none. The configured $DEV_BRANCH wins when it exists: its remote
+# ref origin/<dev> first, else the local branch. Only when neither exists does
+# this fall back to the repository's default branch as advertised by
+# origin/HEAD (e.g. origin/master) and warn about it, so a repository that
+# deleted its dev branch keeps spawning. Deliberately no fetch here: callers
+# fetch first, and a pre-existing remote ref must keep priority even when that
+# fetch failed.
+resolve_base_ref() { # $1=repo-root
+  local root=$1 default
+  if git -C "$root" rev-parse --verify --quiet "origin/$DEV_BRANCH" >/dev/null; then
+    printf 'origin/%s' "$DEV_BRANCH"; return 0
+  fi
+  if branch_exists "$root" "$DEV_BRANCH"; then
+    printf '%s' "$DEV_BRANCH"; return 0
+  fi
+  default=$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  if [ -n "$default" ] && git -C "$root" rev-parse --verify --quiet "$default" >/dev/null; then
+    warn "base branch '$DEV_BRANCH' not found on origin or locally; falling back to the default branch '${default#origin/}'"
+    printf '%s' "$default"; return 0
+  fi
+  die "no base branch: '$DEV_BRANCH' is missing from origin and local refs, and origin/HEAD names no usable default (in $root)"
+}
+
 # Pick an unused local task branch. A linked worktree cannot check out a branch
 # already checked out by another worktree, so never assume task/<name> is free.
 task_branch() { # $1=repo-root $2=task

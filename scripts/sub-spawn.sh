@@ -115,16 +115,14 @@ WT=$(treehouse get --lease --lease-holder "$TASK")
 [ -n "$WT" ] || die "treehouse returned no worktree path"
 WT=$(cd "$WT" && pwd -P)
 
-# 2. Work on a unique task branch cut from the requested development base.
-#    The main checkout commonly owns development, so switching to it here
-#    would fail (or, worse, allow commits directly on the shared branch).
+# 2. Work on a unique task branch cut from the resolved base branch. The
+#    main checkout commonly owns the configured dev branch, so switching to
+#    it here would fail (or, worse, allow commits directly on the shared
+#    branch).
 BRANCH=$(task_branch "$ROOT" "$TASK")
 git -C "$WT" fetch --quiet origin "$DEV_BRANCH" 2>/dev/null || true
-if git -C "$WT" rev-parse --verify --quiet "origin/$DEV_BRANCH" >/dev/null; then
-  BASE_REF="origin/$DEV_BRANCH"
-else
-  BASE_REF="$DEV_BRANCH"
-fi
+BASE_REF=$(resolve_base_ref "$WT")
+BASE_BRANCH=${BASE_REF#origin/}
 git -C "$WT" switch -c "$BRANCH" "$BASE_REF" \
   || die "cannot create $BRANCH from $BASE_REF"
 
@@ -149,7 +147,7 @@ fi
 #    brief lives in the main checkout) instead of being typed into the
 #    composer: a send-keys kickoff races pi's startup, and a dropped Enter
 #    leaves the prompt stranded in the input box — a child that never starts.
-KICKOFF="Read the task brief at $TF and complete the full flow (atomic specs, implementation, code audit). Commit your work on the current branch ($BRANCH). Push your branch to origin and create a pull request against development using gh pr create. Write your report to $RF (what you changed, test results, PR link, notes). Do not use notify, ntfy, or any other external notification mechanism. When done or blocked, use only $SCRIPT_DIR/sub-report.sh $TASK \"DONE: <one-line summary> (PR #...)\" (or BLOCKED: <reason>)"
+KICKOFF="Read the task brief at $TF and complete the full flow (atomic specs, implementation, code audit). Commit your work on the current branch ($BRANCH). Push your branch to origin and create a pull request against $BASE_BRANCH using gh pr create. Write your report to $RF (what you changed, test results, PR link, notes). Do not use notify, ntfy, or any other external notification mechanism. When done or blocked, use only $SCRIPT_DIR/sub-report.sh $TASK \"DONE: <one-line summary> (PR #...)\" (or BLOCKED: <reason>)"
 
 # 5. Boot pi in a named tmux session, rooted in the worktree. The isolated
 #    agent directory deliberately provides no extensions or packages.
@@ -195,6 +193,7 @@ info "Subsession spawned:"
 info "  task:     $TASK"
 info "  worktree: $WT"
 info "  branch:   $BRANCH"
+info "  base:     $BASE_REF"
 info "  session:  $SESS"
 if [ -n "$VIEWER" ]; then
   info "  viewer:   pane/window in session $VIEWER"
