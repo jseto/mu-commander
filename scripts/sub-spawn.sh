@@ -85,6 +85,7 @@ cd "$ROOT"
 WT=""
 CHILD_AGENT_DIR=""
 SESS_STARTED=0
+WATCH_STATE=""
 cleanup_on_error() {
   local status=$?
   if [ "$status" -ne 0 ]; then
@@ -182,6 +183,23 @@ tmux_send_line "$SESS" "$PI_LAUNCH" \
 info "Waiting ${PI_BOOT_DELAY}s for pi to boot ..."
 sleep "$PI_BOOT_DELAY"
 
+# 5b. Arm the per-child Lavish watcher: a dedicated window of the child's
+#     tmux session (so it stops when the session is killed on retirement)
+#     that wakes the child when review feedback is queued. Best effort —
+#     the child still works without it, but the wake loop is the feature, so
+#     a failed window warns loudly. Skippable with SUB_SPAWN_NO_WATCH=1.
+if [ "${SUB_SPAWN_NO_WATCH:-0}" = 1 ]; then
+  WATCH_STATE="disabled (SUB_SPAWN_NO_WATCH=1)"
+else
+  WATCH_CMD=$(printf 'exec %q %q %q' "$SCRIPT_DIR/sub-lavish-watch.sh" "$TASK" "$ROOT")
+  if tmux new-window -d -t "=$SESS:" -n lavish-watch -c "$WT" "$WATCH_CMD" >/dev/null 2>&1; then
+    WATCH_STATE="lavish-watch window in $SESS"
+  else
+    WATCH_STATE="unavailable"
+    warn "could not create the lavish-watch window in $SESS — Lavish feedback will not wake this child automatically"
+  fi
+fi
+
 # 6. Live viewer pane in the invoking tmux window (falling back to a
 #    detached viewer window when there is no invoking pane). A viewer problem
 #    must never fail the spawn: the EXIT trap would release the worktree.
@@ -201,6 +219,7 @@ fi
 info "  brief:    $TF"
 info "  report:   $RF"
 info "  launch:   ${CHILD_LAUNCH_FLAGS:-model/thinking inherited from settings}"
+info "  watch:    $WATCH_STATE"
 info "  scripts:  $SCRIPT_DIR"
 info ""
 info "--- pane tail ---"
