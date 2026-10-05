@@ -793,6 +793,9 @@ one identifier the whole pattern keys on: it becomes the tmux session
   default, and a misnamed orchestrator silently misses them.
 - Children never talk to each other — all coordination goes through the main
   session (star topology); the main session is the only orchestrator.
+- **One child per issue** (user directive, 2026-10-05): when a request covers
+  2 or more issues, spawn a separate child for each issue — never bundle
+  several issues into one child's brief.
 - The main session delegates all implementation work (see *Delegation
   mandate*); if it is editing repo files or running mutating commands to
   "just fix it", it is violating the pattern.
