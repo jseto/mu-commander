@@ -377,6 +377,22 @@ include the password). Keep the review loop in the chat; do not add Telegram
 menu surfaces for it. The `lavish-telegram` extension (pi-config repo)
 automates link delivery and the background feedback poll.
 
+### Child Lavish wake-up
+
+`sub-spawn.sh` arms one `scripts/sub-lavish-watch.sh` per child in a
+`lavish-watch` window of the child's tmux session (it dies with the session
+on retirement). The watcher never runs `lavish-axi poll` and never consumes
+feedback: it scans `$LAVISH_AXI_STATE_DIR/state.json` read-only for sessions
+whose artifact lives under the child's worktree with queued
+(`pending_prompts`) prompts and wakes the child through the verified
+`sub-send.sh` send, which tells the child to drain its queue with its normal
+`lavish-axi poll`. Wakes are deduplicated per queued batch and retried when
+unconfirmed; a pane that is not running `pi` is never typed into; a watcher
+that cannot start only warns (skip it with `SUB_SPAWN_NO_WATCH=1`). Knobs:
+`LAVISH_WATCH_INTERVAL`, `LAVISH_WATCH_RETRY_SECONDS`,
+`LAVISH_WATCH_REWAKE_SECONDS`, `LAVISH_WATCH_START_MARGIN`. Spec:
+`specs/lavish-wake/`, tests: `tests/lavish-wake.test.sh`.
+
 ### Child model and thinking levels
 
 The difficulty of the task decides the child's model and thinking level.
