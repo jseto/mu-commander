@@ -5,7 +5,7 @@
 # updated this suite to the end state).
 # One test per Scenario in specs/rename-ai-commander/rename-ai-commander.feature.
 #
-# [REQ-1] and [REQ-6] always run against the tracked files of this checkout.
+# [REQ-1] always runs against the tracked files of this checkout.
 # The machine-specific assertions ([REQ-4], [REQ-5], [REQ-7]) check real
 # state outside the repository; they fail loudly when the state exists but is
 # wrong, and skip when it does not exist at all, so the suite stays runnable
@@ -110,18 +110,6 @@ if [ -f "$TREEHOUSE_CFG" ] && [ -d "$NEW_CHECKOUT" ]; then
 else
   skip "[REQ-5] $NEW_CHECKOUT or $TREEHOUSE_CFG not present yet (machine rename pending)"
 fi
-
-# ---------------------------------------------------------------------------
-# [REQ-6] Role prose keeps the word orchestrator.
-# ---------------------------------------------------------------------------
-echo 'test: Role prose keeps the word orchestrator [REQ-6]'
-if ! grep -qF '(the orchestrator)' "$ROOT/AGENTS.md"; then
-  fail "[REQ-6] AGENTS.md no longer describes the main session as the orchestrator"
-fi
-if ! git -C "$ROOT" grep -q 'orchestrat'; then
-  fail "[REQ-6] no prose use of orchestrator/orchestration remains in tracked files"
-fi
-ok
 
 # ---------------------------------------------------------------------------
 # [REQ-7] The origin remote carries the current repository name.

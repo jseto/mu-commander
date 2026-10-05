@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Behavioural tests for the child task-levels feature (root config.json,
+# Behavioural tests for the child task-levels feature (config-driven
 # resolve_child_launch_flags, pi_launch_command, thinking/trust inheritance,
 # sub-spawn flag parsing).
 # One test per Scenario in specs/child-task-levels/child-task-levels.feature.
 #
 # Hermetic by construction: resolver tests clear SUB_LEVEL/SUB_MODEL/
 # SUB_THINKING/SUB_LEVELS_CONFIG from the environment and re-add exactly what
-# the scenario needs; REQ-1/REQ-2/REQ-3 exercise the repository's real root
-# config.json (the shipped defaults are part of the contract).
+# the scenario needs. Level resolution is driven by a fixture config written
+# under $SCRATCH — the shipped root config.json is never the subject under
+# test (tests never assert document/config contents).
 # The inheritance test redirects $HOME to a scratch fixture, like
 # tests/sub-common.test.sh, so no real ~/.pi state is read or touched.
 set -u
@@ -15,7 +16,6 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 COMMON=${SUB_COMMON_UNDER_TEST:-$ROOT/scripts/_sub-common.sh}
 SPAWN=${SUB_SPAWN_UNDER_TEST:-$ROOT/scripts/sub-spawn.sh}
-CONFIG=${TASK_LEVELS_CONFIG_UNDER_TEST:-$ROOT/config.json}
 
 failures=0
 fail() { printf '  ASSERT FAILED: %s\n' "$*" >&2; exit 1; }
@@ -24,6 +24,22 @@ SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
 
 jq_ok() { command -v jq >/dev/null 2>&1 || { printf '  SKIP: jq not on PATH\n' >&2; return 0; }; }
+
+# Level-resolution fixture: the resolver is driven by this file, never by the
+# shipped root config.json (tests never assert shipped config contents).
+LEVELS_FIXTURE="$SCRATCH/levels.json"
+cat > "$LEVELS_FIXTURE" <<'JSON'
+{
+  "taskLevels": {
+    "default": "standard",
+    "levels": {
+      "easy":     { "model": "fixture/easy",     "thinking": "high" },
+      "standard": { "model": "fixture/standard", "thinking": "medium" },
+      "hard":     { "model": "fixture/hard",     "thinking": "max" }
+    }
+  }
+}
+JSON
 
 # ---------------------------------------------------------------------------
 # Harness: resolve <level> <model> <thinking> [ENV=VALUE ...]
@@ -64,49 +80,36 @@ spawn_bad() {
 # Scenarios
 # ---------------------------------------------------------------------------
 
-t_req1_default_level_uses_shipped_defaults() {
-  jq_ok || return 0
-  # The shipped contract: root config.json, levels under .taskLevels.
-  [ -f "$CONFIG" ] || fail "expected the shipped config at $CONFIG"
-  jq -e '(.taskLevels.levels | type) == "object"
-         and (.taskLevels.default | type) == "string"' "$CONFIG" >/dev/null \
-    || fail "$CONFIG must hold the levels under the taskLevels section"
-  resolve "" "" ""
-  [ "$RC" -eq 0 ] || fail "expected exit 0, got $RC ($RERR)"
-  [ -z "$RERR" ] || fail "expected no warning, got: $RERR"
-  [ "$OUT" = "--model opencode-go/mimo-v2.6-flash --thinking xhigh" ] \
-    || fail "default level should resolve to the shipped standard model @ xhigh, got: $OUT"
-}
-
 t_req2_named_levels_select_their_mapping() {
   jq_ok || return 0
-  resolve easy "" ""
-  [ "$OUT" = "--model opencode-zen-free/mimo-v2.6-flash-free --thinking high" ] \
-    || fail "easy should resolve to mimo @ high, got: $OUT"
-  resolve hard "" ""
-  [ "$OUT" = "--model opencode-go/deepseek-v4.1-flash --thinking max" ] \
-    || fail "hard should resolve to deepseek @ max, got: $OUT"
+  resolve easy "" "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE"
+  [ "$RC" -eq 0 ] || fail "expected exit 0, got $RC ($RERR)"
+  [ "$OUT" = "--model fixture/easy --thinking high" ] \
+    || fail "easy should resolve to fixture/easy @ high, got: $OUT"
+  resolve hard "" "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE"
+  [ "$OUT" = "--model fixture/hard --thinking max" ] \
+    || fail "hard should resolve to fixture/hard @ max, got: $OUT"
 }
 
 t_req3_explicit_flags_beat_the_level_mapping() {
   jq_ok || return 0
-  resolve "" "" low
-  [ "$OUT" = "--model opencode-go/mimo-v2.6-flash --thinking low" ] \
-    || fail "thinking flag should keep the level's model, got: $OUT"
-  resolve "" custom/m ""
-  [ "$OUT" = "--model custom/m --thinking xhigh" ] \
-    || fail "model flag should keep the level's thinking, got: $OUT"
+  resolve "" "" low SUB_LEVELS_CONFIG="$LEVELS_FIXTURE"
+  [ "$OUT" = "--model fixture/standard --thinking low" ] \
+    || fail "thinking flag should keep the default level's model, got: $OUT"
+  resolve "" custom/m "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE"
+  [ "$OUT" = "--model custom/m --thinking medium" ] \
+    || fail "model flag should keep the default level's thinking, got: $OUT"
 }
 
 t_req4_env_overrides_and_flag_precedence() {
   jq_ok || return 0
-  resolve "" "" "" SUB_LEVEL=easy
-  [ "$OUT" = "--model opencode-zen-free/mimo-v2.6-flash-free --thinking high" ] \
+  resolve "" "" "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE" SUB_LEVEL=easy
+  [ "$OUT" = "--model fixture/easy --thinking high" ] \
     || fail "SUB_LEVEL=easy should win over the default level, got: $OUT"
-  resolve "" "" "" SUB_LEVEL=easy SUB_MODEL=env/m
+  resolve "" "" "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE" SUB_LEVEL=easy SUB_MODEL=env/m
   [ "$OUT" = "--model env/m --thinking high" ] \
     || fail "SUB_MODEL should win over the level mapping, got: $OUT"
-  resolve "" flag/m "" SUB_LEVEL=easy SUB_MODEL=env/m
+  resolve "" flag/m "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE" SUB_LEVEL=easy SUB_MODEL=env/m
   [ "$OUT" = "--model flag/m --thinking high" ] \
     || fail "--model flag should win over SUB_MODEL, got: $OUT"
 }
@@ -236,7 +239,6 @@ run() {
   fi
 }
 
-run "[REQ-1]  default level resolves the shipped initial config"   t_req1_default_level_uses_shipped_defaults
 run "[REQ-2]  named levels select their configured mapping"        t_req2_named_levels_select_their_mapping
 run "[REQ-3]  explicit flags beat the level mapping"               t_req3_explicit_flags_beat_the_level_mapping
 run "[REQ-4]  env overrides apply, flags win over env"             t_req4_env_overrides_and_flag_precedence

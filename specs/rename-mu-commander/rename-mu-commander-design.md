@@ -85,7 +85,7 @@ flowchart LR
 
 1. Write `tests/rename-mu-commander.test.sh` (+ the feature/design docs) →
    suite is RED against the current tree (old identifiers still present).
-2. Apply the tracked-file renames → `[REQ-1]`–`[REQ-5]` go green.
+2. Apply the tracked-file renames → `[REQ-1]` and `[REQ-3]` go green.
 3. Rename the GitHub repo, re-point `origin`, then push and open the PR →
    `[REQ-6]` green.
 4. Full `tests/*.sh` suite green + shellcheck clean, commit, report.
@@ -159,9 +159,7 @@ rename, per the list above).
   (`mu-commander/shellcheck`) is written twice — once in the setup script, once
   in the worktree-setup test sandbox — but the duplication is intentional: the
   test asserts the expected literal instead of deriving it from the
-  implementation under test. The `[REQ-4]` check asserts the design doc
-  documents the exemptions (a documentation invariant) because the rename
-  documents are historical text by design; the real behavioral exemption is
-  exercised by `[REQ-1]` whenever the exempt files are present.
+  implementation under test. The behavioral exemption is exercised by
+  `[REQ-1]` whenever the exempt files are present.
 - **Tests**: full suite green after the change (11/11 `tests/*.sh` files,
   including both rename suites and the updated worktree-setup sandbox path).

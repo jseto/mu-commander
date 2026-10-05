@@ -275,12 +275,6 @@ t_req7_stray_shellcheck_outside_slot_untouched() {
   assert_slot_version "$PIN"       # repo copy provisioned alongside the stray
 }
 
-t_req8_agents_md_documents_dependency() {
-  # shellcheck disable=SC2016  # literal backticks, not an expansion
-  grep -Fq 'provisions `shellcheck`' "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the shellcheck provisioning"
-}
-
 # --- [REQ-11] activate .githooks when core.hooksPath is unset --------------
 t_req11_activates_githooks_when_unset() {
   sandbox
@@ -363,7 +357,6 @@ run "[REQ-4] refresh managed install on pin change"           t_req4_refreshes_m
 run "[REQ-5] failure reported without aborting setup"         t_req5_failure_reported_without_aborting_setup
 run "[REQ-6] resolve repo-provided shellcheck on PATH"        t_req6_resolves_repo_provided_shellcheck_on_path
 run "[REQ-7] stray shellcheck outside slot untouched"         t_req7_stray_shellcheck_outside_slot_untouched
-run "[REQ-8] AGENTS.md documents the dependency"              t_req8_agents_md_documents_dependency
 run "[REQ-11] activate .githooks when hooksPath unset"        t_req11_activates_githooks_when_unset
 run "[REQ-12] skip repositories without .githooks"            t_req12_skips_repository_without_githooks
 run "[supp] checksum mismatch rejected"                       t_sup_checksum_mismatch_rejected

@@ -44,10 +44,6 @@ Feature: Retirement cost logging in the conversation log
     Then the script exits with a failure status
     And the conversation log gains no entry
 
-  Scenario: Document the retirement cost logging in AGENTS.md [REQ-7]
-    When AGENTS.md is read at its retire step and its helper-scripts table
-    Then it documents that retiring appends a conversation-log entry
-    And it documents that the entry includes the child's session cost
 
   Scenario: Pass shellcheck on sub-retire.sh [REQ-8]
     When "shellcheck scripts/sub-retire.sh" is run

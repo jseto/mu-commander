@@ -53,11 +53,6 @@ Feature: Reliable child-to-main push notices (sub-report.sh)
     Then the pane receives the instruction text
     And the script exits successfully reporting the instruction
 
-  Scenario: Document the verified-delivery contract in AGENTS.md [REQ-8]
-    Given the repository's AGENTS.md
-    When the reporting step (step 4) is read
-    Then it states that sub-report.sh verifies delivery and fails loudly
-    And it states that the durable report file remains the source of truth
 
   Scenario: Keep the touched shell scripts shellcheck-clean [REQ-9]
     Given shellcheck is available

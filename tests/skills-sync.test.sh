@@ -300,16 +300,6 @@ t_sup_usage_without_arguments() {
   grep -qF 'usage: scripts/sync-skills.sh' "$SB/err" || fail "no usage message"
 }
 
-t_sup_readme_documents_flow() {
-  local readme="$ROOT/README.md"
-  [ -f "$readme" ] || fail "no README.md"
-  local token
-  for token in '.githooks' 'core.hooksPath' 'required-skills' '.agents/skills' \
-               'scripts/sync-skills.sh'; do
-    grep -qF -- "$token" "$readme" || fail "README does not mention $token"
-  done
-}
-
 t_sup_shellcheck_touched_scripts() {
   bash -n "$SYNC" || fail "bash -n reported findings in sync-skills.sh"
   bash -n "$ROOT/.githooks/pre-push" || fail "bash -n reported findings in pre-push"
@@ -353,7 +343,6 @@ run "[REQ-10] foreign core.hooksPath preserved"         t_req10_installer_preser
 run "[supp]   missing source path is a no-op"           t_sup_missing_source_path_is_noop
 run "[supp]   activation failure warns, status 0"       t_sup_activation_failure_warns_without_failing
 run "[supp]   usage without arguments"                  t_sup_usage_without_arguments
-run "[supp]   README documents the hooks + skills flow" t_sup_readme_documents_flow
 run "[supp]   shellcheck + bash -n of touched scripts"  t_sup_shellcheck_touched_scripts
 
 if [ "$failures" -gt 0 ]; then

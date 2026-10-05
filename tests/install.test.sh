@@ -483,19 +483,6 @@ t_req10_exit_status() {
   assert_status 1
 }
 
-# --- [REQ-11] README recommends the installer ------------------------------
-t_req11_readme_recommends_installer() {
-  local readme="$ROOT/README.md"
-  [ -f "$readme" ] || fail "no README.md"
-  grep -qF './install.sh' "$readme" || fail "README does not show ./install.sh"
-  grep -qi 'recommended' "$readme" || fail "README does not recommend the installer"
-  grep -qF '| Tool | Used for |' "$readme" \
-    || fail "README dropped the manual dependency table"
-  # shellcheck disable=SC2016  # literal backticks, not an expansion
-  grep -qF '`treehouse` |' "$readme" \
-    || fail "README manual dependency table lost rows"
-}
-
 # --- supplementary ----------------------------------------------------------
 
 t_sup_pm_failure_reports_and_continues() {
@@ -587,7 +574,6 @@ run "[REQ-7]  pi instructions without Node/npm"              t_req7_pi_instructi
 run "[REQ-8]  shellcheck via the shared pinned install"      t_req8_shellcheck_via_shared_hook
 run "[REQ-9]  summary + idempotent second run"               t_req9_summary_and_idempotent_rerun
 run "[REQ-10] exit status reflects final state"              t_req10_exit_status
-run "[REQ-11] README recommends the installer"               t_req11_readme_recommends_installer
 run "[supp]   pm failure reported, other categories run"     t_sup_pm_failure_reports_and_continues
 run "[supp]   treehouse checksum mismatch rejected"          t_sup_treehouse_checksum_mismatch_rejected
 run "[supp]   wget fallback when curl is absent"             t_sup_treehouse_wget_fallback

@@ -166,7 +166,7 @@ treehouse init
 
 ```bash
 ./mu --help               # pi's usage; exits 127 if pi is missing
-bash tests/readme.test.sh # one test file
+bash tests/task-levels.test.sh # one test file
 for t in tests/*.test.sh; do bash "$t"; done   # full suite, exit 0 = green
 ```
 

@@ -6,7 +6,9 @@
 # specs/free-limit-fallback/free-limit-fallback.feature.
 #
 # The resolver tests source scripts/_sub-common.sh with SUB_FALLBACK_*/
-# SUB_LEVELS_CONFIG cleared (like tests/task-levels.test.sh). The pane tests
+# SUB_LEVELS_CONFIG cleared (like tests/task-levels.test.sh); a test that
+# needs a config writes a fixture under $SCRATCH or $SB — the shipped root
+# config.json is never the subject under test. The pane tests
 # sandbox a stateful fake tmux binary placed first on PATH — pane/footer/
 # session state lives in a per-test temp dir and no real tmux session is ever
 # touched.
@@ -24,6 +26,13 @@ jq_ok() { command -v jq >/dev/null 2>&1 || { printf '  SKIP: jq not on PATH\n' >
 
 SCRATCH=$(mktemp -d)
 trap 'rm -rf "$SCRATCH"' EXIT
+
+# Resolver fixture: the shipped root config.json is never the subject under
+# test, so resolver tests that need a config point at this fixture.
+FB_FIXTURE="$SCRATCH/fixture-config.json"
+cat > "$FB_FIXTURE" <<'JSON'
+{"taskLevels":{"default":"standard","fallbackModel":"opencode-go/mimo-v2.6-flash","fallbackThinking":"high","levels":{"standard":{"model":"m","thinking":"high"}}}}
+JSON
 
 # ---------------------------------------------------------------------------
 # Config-resolver harness
@@ -208,8 +217,22 @@ EOS
     printf '%s\n' '0.0%/200k (auto)          (opencode-zen-free) mimo-v2.6-flash-free • xhigh'
   } > "$FAKE_TMUX_DIR/footer"
   export FAKE_TMUX_MODE=ok
-  # Pin the config and timing so no ambient environment leaks into the sandbox.
-  export SUB_LEVELS_CONFIG="$ROOT/config.json"
+  # Pin a fixture config and the timing so no ambient environment leaks into
+  # the sandbox. The fallback values under test come from this fixture, never
+  # from the shipped root config.json (tests never assert config contents).
+  cat > "$SB/fixture-config.json" <<'JSON'
+{
+  "taskLevels": {
+    "default": "standard",
+    "fallbackModel": "opencode-go/mimo-v2.6-flash",
+    "fallbackThinking": "high",
+    "levels": {
+      "standard": { "model": "opencode-zen-free/mimo-v2.6-flash-free", "thinking": "high" }
+    }
+  }
+}
+JSON
+  export SUB_LEVELS_CONFIG="$SB/fixture-config.json"
   unset SUB_FALLBACK_MODEL SUB_FALLBACK_THINKING
   unset FAKE_TMUX_LEVEL_AFTER_MODEL
   export FALLBACK_PROBE_ATTEMPTS=2
@@ -264,23 +287,13 @@ expect_not_err()    { ! printf '%s' "$FB_ERR" | grep -q -- "$1" || fail "stderr 
 # Scenarios — one test per [REQ-n]
 # ---------------------------------------------------------------------------
 
-t_req1_shipped_config_resolves_fallback() {
-  jq_ok || return 0
-  resolve_fallback resolve_fallback_model
-  [ "$RC" -eq 0 ] || fail "model resolver exit $RC: $RERR"
-  [ -z "$RERR" ] || fail "expected no warnings, got: $RERR"
-  [ "$OUT" = "opencode-go/mimo-v2.6-flash" ] || fail "unexpected model: $OUT"
-  resolve_fallback resolve_fallback_thinking
-  [ "$RC" -eq 0 ] || fail "thinking resolver exit $RC: $RERR"
-  [ -z "$RERR" ] || fail "expected no warnings, got: $RERR"
-  [ "$OUT" = "high" ] || fail "unexpected thinking: $OUT"
-}
-
 t_req2_env_overrides_win() {
-  resolve_fallback resolve_fallback_model SUB_FALLBACK_MODEL=custom/fb
+  resolve_fallback resolve_fallback_model \
+    SUB_LEVELS_CONFIG="$FB_FIXTURE" SUB_FALLBACK_MODEL=custom/fb
   [ "$RC" -eq 0 ] || fail "exit $RC: $RERR"
   [ "$OUT" = "custom/fb" ] || fail "env model must win, got: $OUT"
-  resolve_fallback resolve_fallback_thinking SUB_FALLBACK_THINKING=low
+  resolve_fallback resolve_fallback_thinking \
+    SUB_LEVELS_CONFIG="$FB_FIXTURE" SUB_FALLBACK_THINKING=low
   [ "$RC" -eq 0 ] || fail "exit $RC: $RERR"
   [ "$OUT" = "low" ] || fail "env thinking must win, got: $OUT"
 }
@@ -573,26 +586,6 @@ t_req11_missing_session_dies() {
   expect_err "not running"
 }
 
-t_req12_agents_md_documents_fallback() {
-  grep -q "fallbackModel" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the fallbackModel entry"
-  grep -q "sub-fallback.sh" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the sub-fallback.sh recovery command"
-}
-
-# [REQ-16] config.json is the single source of truth for fallback values:
-# AGENTS.md may point at the entries but must pin no value for either.
-t_req16_agents_md_names_no_fallback_values() {
-  ! grep -q '"fallbackModel": "' "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md pins a fallbackModel value — config.json owns it"
-  ! grep -q '"fallbackThinking": "' "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md pins a fallbackThinking value — config.json owns it"
-  grep -q "taskLevels.fallbackModel" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not point at the config.json taskLevels.fallbackModel entry"
-  grep -q "taskLevels.fallbackThinking" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not point at the config.json taskLevels.fallbackThinking entry"
-}
-
 t_req13_shellcheck_and_bash_n_clean() {
   bash -n "$COMMON" || fail "bash -n reported syntax errors in $COMMON"
   bash -n "$FALLBACK" || fail "bash -n reported syntax errors in $FALLBACK"
@@ -613,7 +606,6 @@ run() {
   fi
 }
 
-run "[REQ-1]  shipped config resolves the fallback entry"    t_req1_shipped_config_resolves_fallback
 run "[REQ-2]  env overrides win over the config"             t_req2_env_overrides_win
 run "[REQ-3]  absent/unreadable config degrades to none"     t_req3_absent_or_unreadable_degrades_to_none
 run "[REQ-4]  free-limit error in the pane is detected"      t_req4_free_limit_error_detected
@@ -629,8 +621,6 @@ run "[REQ-15] rejected thinking degrades to the recovery"    t_req15_rejected_th
 run "[REQ-17] FreeTierError/403 pane failure is detected"    t_req17_free_tier_error_detected
 run "[REQ-18] messages describe both detected failure kinds"  t_req18_messages_describe_detected_failures
 run "[REQ-11] missing child session dies"                    t_req11_missing_session_dies
-run "[REQ-12] AGENTS.md documents the fallback"              t_req12_agents_md_documents_fallback
-run "[REQ-16] AGENTS.md names no fallback values"            t_req16_agents_md_names_no_fallback_values
 run "[REQ-13] touched scripts shellcheck-clean"              t_req13_shellcheck_and_bash_n_clean
 
 if [ "$failures" -gt 0 ]; then

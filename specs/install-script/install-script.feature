@@ -107,9 +107,3 @@ Feature: dependency installer for mu-commander
     And it exits with a non-zero status when any dependency is still missing,
       whether an install failed or manual action is required
 
-  Scenario: README recommends the installer [REQ-11]
-    Given the repository README.md
-    When its Installation section is read
-    Then it points at install.sh as the recommended way to install the
-      dependencies
-    And it keeps the manual dependency table as reference

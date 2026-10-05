@@ -1,12 +1,10 @@
 Feature: Per-task difficulty levels for child model and thinking (sub-spawn)
   The orchestrator evaluates each task and picks one of three difficulty
   levels; the level decides the child's model and thinking level. The levels
-  are configuration, not code: they live in config.json at the root of the
+  are configuration, not code: they live in a config file at the root of the
   mu-commander checkout, inside the namespaced "taskLevels" top-level
-  section, seeded with the orchestrator's initial defaults
-  (easy = mimo free @ medium, standard = mimo free @ xhigh, hard =
-  deepseek-v4.1-flash @ max, default = standard). config.json is a generic
-  root-level file: future general settings live in sibling top-level keys,
+  section. That config is a generic root-level file: future general settings
+  live in sibling top-level keys,
   and level resolution must ignore them — an unknown sibling key never breaks
   a spawn. Resolution is defensive:
   an explicit --model/--thinking flag beats the level mapping, the env
@@ -16,29 +14,24 @@ Feature: Per-task difficulty levels for child model and thinking (sub-spawn)
   (no worktree is leased). The model/thinking options must reach pi as
   options on the launch line, ahead of the kickoff message argument.
 
-  Scenario: Default level resolves the shipped initial config [REQ-1]
-    Given the repository's root config.json with its initial defaults in
-      the "taskLevels" section
-    When resolve_child_launch_flags is called with no level, model, or thinking
-    Then it echoes "--model opencode-go/mimo-v2.6-flash --thinking xhigh"
-    And exits 0 without warnings
-
   Scenario: Named levels select their configured mapping [REQ-2]
-    Given the repository's root config.json with its initial defaults
+    Given a fixture config whose "taskLevels.levels" maps "easy" and
+      "hard" to a model and a thinking level
     When resolve_child_launch_flags is called with level "easy"
-    Then it echoes "--model opencode-zen-free/mimo-v2.6-flash-free --thinking high"
+    Then it echoes the "easy" mapping's model and thinking
     When resolve_child_launch_flags is called with level "hard"
-    Then it echoes "--model opencode-go/deepseek-v4.1-flash --thinking max"
+    Then it echoes the "hard" mapping's model and thinking
 
   Scenario: Explicit flags beat the level mapping [REQ-3]
-    Given the repository's root config.json with its initial defaults
+    Given a fixture config whose default level maps to a model and a
+      thinking level
     When resolve_child_launch_flags is called with thinking "low"
     Then it echoes the default level's model with "--thinking low"
     When resolve_child_launch_flags is called with model "custom/m"
     Then it echoes "--model custom/m" with the default level's thinking
 
   Scenario: Env overrides apply when flags are absent, flags win over env [REQ-4]
-    Given the repository's root config.json with its initial defaults
+    Given a fixture config with an "easy" level mapping
     And SUB_LEVEL=easy is set in the environment
     When resolve_child_launch_flags is called with no arguments
     Then it echoes the "easy" mapping

@@ -52,7 +52,3 @@ Feature: shellcheck as a declared, repo-provisioned dependency
     Then the stray shellcheck is left byte-for-byte unchanged
     And the managed path still receives the pinned shellcheck
 
-  Scenario: AGENTS.md documents shellcheck as a declared dependency [REQ-8]
-    Given the repository checkout
-    When "AGENTS.md" is read
-    Then it states that shellcheck is provisioned by worktree-setup.sh

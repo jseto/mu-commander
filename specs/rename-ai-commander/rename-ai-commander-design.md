@@ -154,7 +154,7 @@ machines without this task's machine state.
   identifier substitutions in the surviving files plus this spec/test pair;
   no development content was reverted, no later rename identifier was
   introduced, and the generic "orchestrator"/"orchestration" prose is
-  untouched ([REQ-6]).
+  untouched.
 - **[REQ-2] is historical**: its `pi.sh` default no longer exists on the
   rebased base and its coverage (`tests/test-pi-sh.sh`) was removed by
   development; this spec now records the requirement as dropped.

@@ -240,13 +240,6 @@ t_req7_sub_send_still_delivers() {
   expect_out "instruction sent to $SESS"
 }
 
-t_req8_agents_md_documents_contract() {
-  grep -q "sub-report.sh.*verifies\|verifies the notice" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document that sub-report.sh verifies delivery"
-  grep -q "fails loudly" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the loud-failure contract"
-}
-
 t_req9_shellcheck_touched_scripts() {
   if ! command -v shellcheck >/dev/null 2>&1; then
     printf '  SKIP: shellcheck not on PATH\n' >&2
@@ -299,16 +292,6 @@ t_send_req8_success_wording_unchanged() {
   expect_out "instruction sent to $SESS"
 }
 
-# [fix-send-confirm REQ-9] AGENTS.md documents the evidence-based contract.
-t_send_req9_agents_md_documents_evidence_contract() {
-  grep -Fq "prompt has **left the" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document that success requires leaving the composer"
-  grep -Fq "composer and appears in the transcript" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the transcript evidence"
-  grep -q "fails loudly\|fail loudly" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the loud-failure contract"
-}
-
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -330,12 +313,10 @@ run "[REQ-4] re-type when the text never appears"             t_req4_retypes_whe
 run "[REQ-5] retry Enter while the pane is frozen"            t_req5_retries_enter_while_pane_frozen
 run "[REQ-6] unconfirmed delivery fails loudly"               t_req6_unconfirmed_delivery_fails_loudly
 run "[REQ-7] sub-send keeps delivering via shared helper"     t_req7_sub_send_still_delivers
-run "[REQ-8] AGENTS.md documents the delivery contract"       t_req8_agents_md_documents_contract
 run "[REQ-9] shellcheck touched scripts"                      t_req9_shellcheck_touched_scripts
 run "[supp] sub-send unconfirmed instruction fails loudly"    t_supp_sub_send_unconfirmed_is_loud
 run "[fix-send-confirm REQ-2/REQ-5] parked incident never reported" t_send_req2_incident_never_reported_as_sent
 run "[fix-send-confirm REQ-8] success wording unchanged"       t_send_req8_success_wording_unchanged
-run "[fix-send-confirm REQ-9] AGENTS.md documents evidence contract" t_send_req9_agents_md_documents_evidence_contract
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"

@@ -214,13 +214,6 @@ t_req8_refused_retirement_touches_nothing() {
   remote_branch_exists || fail "remote branch deleted by a refused retirement"
 }
 
-t_req9_agents_md_documents_cleanup() {
-  grep -q -- "--no-branch-cleanup" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document --no-branch-cleanup"
-  grep -qi "branch cleanup" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document branch cleanup in step 6"
-}
-
 t_req10_shellcheck_clean() {
   if ! command -v shellcheck >/dev/null 2>&1; then
     printf '  SKIP: shellcheck not on PATH\n' >&2
@@ -252,7 +245,6 @@ run "[REQ-6] deletion errors never fail retire"     t_req6_deletion_error_is_non
 run "[REQ-6] gh failure never fails retire"         t_req6_supplementary_gh_failure_nonfatal
 run "[REQ-7] --no-branch-cleanup skips cleanup"     t_req7_no_branch_cleanup_flag
 run "[REQ-8] refused retirement touches no branches" t_req8_refused_retirement_touches_nothing
-run "[REQ-9] AGENTS.md documents cleanup"           t_req9_agents_md_documents_cleanup
 run "[REQ-10] shellcheck scripts/sub-retire.sh"     t_req10_shellcheck_clean
 
 if [ "$failures" -gt 0 ]; then

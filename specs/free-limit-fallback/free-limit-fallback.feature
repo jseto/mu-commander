@@ -18,13 +18,6 @@ Feature: Fallback model for the free provider's usage limit (sub-fallback)
   fallbackModel, means "no fallback": existing helpers must keep working
   unchanged and sub-fallback must not invent a model.
 
-  Scenario: Fallback entry resolves from the shipped config [REQ-1]
-    Given the repository's root config.json with its shipped taskLevels
-      section
-    When resolve_fallback_model is called with no override
-    Then it echoes "opencode-go/mimo-v2.6-flash" and exits 0
-    And resolve_fallback_thinking echoes "high" and exits 0 without warnings
-
   Scenario: Env overrides win over the configured fallback [REQ-2]
     Given SUB_FALLBACK_MODEL=custom/fb and SUB_FALLBACK_THINKING=low are set
     When resolve_fallback_model and resolve_fallback_thinking are called
@@ -54,7 +47,7 @@ Feature: Fallback model for the free provider's usage limit (sub-fallback)
 
   Scenario: A detected error switches the child to the fallback [REQ-6]
     Given a running child whose pane shows the free-limit error
-    And config.json names fallbackModel "opencode-go/mimo-v2.6-flash"
+    And the config's fallbackModel names a model the switch can target
     When sub-fallback.sh runs for the task
     Then "/model opencode-go/mimo-v2.6-flash" is sent through the
       verified send and confirmed
@@ -146,20 +139,6 @@ Feature: Fallback model for the free provider's usage limit (sub-fallback)
     Given the child's tmux session is not running
     When sub-fallback.sh runs for the task
     Then it exits non-zero with "not running" on stderr
-
-  Scenario: AGENTS.md documents the fallback knob and the helper [REQ-12]
-    Given the repository's AGENTS.md
-    When it is inspected
-    Then "Child model and thinking levels" names fallbackModel and
-      sub-fallback.sh
-
-  Scenario: AGENTS.md documents the fallback without naming its values [REQ-16]
-    Given the repository's AGENTS.md
-    When its fallback wording is inspected
-    Then it points at the config.json taskLevels.fallbackModel /
-      taskLevels.fallbackThinking entries as the single source of truth
-    And it pins no value for either entry: no "fallbackModel": or
-      "fallbackThinking": value appears anywhere in the file
 
   Scenario: Touched scripts stay shellcheck-clean [REQ-13]
     Given shellcheck is available

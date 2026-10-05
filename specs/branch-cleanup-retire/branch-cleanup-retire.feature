@@ -55,10 +55,6 @@ Feature: Branch cleanup on subsession retirement
     Then the script exits with a failure status
     And neither the local nor the remote task branch was deleted
 
-  Scenario: Document the cleanup behaviour in AGENTS.md step 6 [REQ-9]
-    When AGENTS.md is read at its step 6 (retire a child)
-    Then it documents what is deleted automatically and when deletion is skipped
-    And it documents the "--no-branch-cleanup" flag
 
   Scenario: Pass shellcheck on sub-retire.sh [REQ-10]
     When "shellcheck scripts/sub-retire.sh" is run

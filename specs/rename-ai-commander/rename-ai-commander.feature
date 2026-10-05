@@ -55,12 +55,6 @@ Feature: Rename the project identifier to mu-commander
       "/home/jseto/programming-projects/mu-commander/scripts/worktree-setup.sh"
     And it does not reference "ai-orchestrator" or "ai-commander"
 
-  Scenario: Role prose keeps the word orchestrator [REQ-6]
-    Given the repository checkout
-    When "AGENTS.md" is read
-    Then it still describes the main session as the orchestrator
-    And no occurrence of the generic words "orchestrator"/"orchestration"
-      was rewritten as part of the rename
 
   Scenario: The origin remote carries the current repository name [REQ-7]
     Given the GitHub repository jseto/ai-orchestrator was renamed to

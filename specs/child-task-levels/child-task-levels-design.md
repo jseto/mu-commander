@@ -7,14 +7,9 @@ passes one of three levels to the spawn; the level maps to the child's
 model and thinking level. The mapping is **configuration, not code**: it
 lives in `config.json` at the repository root — a generic, root-level
 configuration file namespaced under the `taskLevels` top-level section so
-future general settings can sit beside it — seeded with the orchestrator's
-initial defaults:
-
-| Level | For | Model | Thinking |
-|---|---|---|---|
-| `easy` | chores, trims, config/docs edits | `opencode-zen-free/mimo-v2.6-flash-free` | `high` |
-| `standard` (default) | features/bug fixes, full specs+TDD flow | `opencode-go/mimo-v2.6-flash` | `xhigh` |
-| `hard` | architecture, root-cause, long-haul work | `opencode-go/deepseek-v4.1-flash` | `max` |
+future general settings can sit beside it. The concrete levels and their
+model/thinking pairs live in that file alone; this document describes the
+shape of the mapping, not the shipped values.
 
 Retuning the trade-off (e.g. moving a model, changing a thinking cap) is a
 JSON edit, no script change.
@@ -49,7 +44,7 @@ exit 0, and print nothing.
 - **`config.json`** (new, repo root) — generic root-level config; the levels
   live in the `taskLevels` section:
   `{"taskLevels": {default, levels: {<name>:
-  {description, model, thinking}}}}`; the three initial levels above.
+  {description, model, thinking}}}}`; the shipped levels live in the file.
   Sibling top-level keys are reserved for future general settings and are
   ignored by level resolution. Local to this repository by requirement;
   overridable per environment via `SUB_LEVELS_CONFIG`.
@@ -74,9 +69,9 @@ exit 0, and print nothing.
   in the spawn handles. Usage line updated.
 - **`specs/child-task-levels/`** (new) — this design + the feature file.
 - **`tests/task-levels.test.sh`** (new) — one test per scenario
-  [REQ-1]…[REQ-11]; hermetic (fixture configs via `SUB_LEVELS_CONFIG`,
+  [REQ-2]…[REQ-12]; hermetic (fixture configs via `SUB_LEVELS_CONFIG`,
   fixture `$HOME` for the inheritance test, env overrides cleared with
-  `env -u`).
+  `env -u`). The shipped root `config.json` is never the subject under test.
 - **`AGENTS.md`** — "Child model and thinking levels" subsection: the rubric
   for picking a level, the spawn syntax, and the override knobs.
 
@@ -104,7 +99,7 @@ flowchart TD
 
 | File | Change |
 |---|---|
-| `config.json` (repo root) | new — `taskLevels` section: three initial levels + `default`; sibling top-level keys left free for future settings |
+| `config.json` (repo root) | new — `taskLevels` section: the levels + `default`; sibling top-level keys left free for future settings |
 | `scripts/_sub-common.sh` | `_SUB_COMMON_DIR`, `resolve_child_launch_flags`, `pi_launch_command`, thinking/trust keys in `model_cfg` |
 | `scripts/sub-spawn.sh` | flag parsing, resolution call, launch-line builder, handles line, usage/comment updates |
 | `specs/child-task-levels/*` | feature file + this design |
@@ -176,3 +171,20 @@ rationale.
      (existing weakness, unchanged by the refactor).
 - **Recommendation strength**: Speculative for all three; audit verdict —
   no architectural friction detected, ship it.
+
+## Change: document/config-content assertions removed (2026-10-03)
+
+User directive: tests never assert the contents of a document or a config
+file. The suite used to read the shipped `config.json` through
+`TASK_LEVELS_CONFIG_UNDER_TEST` and pin its `standard` echo ([REQ-1]) plus
+the shipped `easy`/`hard`/`default` mappings ([REQ-2]…[REQ-4]) — all red
+once the shipped config was retuned.
+
+- [REQ-1] scenario + test removed (it asserted a shipped config value).
+- [REQ-2]…[REQ-4] scenarios reworded to *a fixture config*; their tests now
+  pass `SUB_LEVELS_CONFIG="$SCRATCH/levels.json"`. The resolver behaviour
+  (named-level selection, flag/model precedence, env precedence) is unchanged
+  and still covered.
+- The suite no longer reads the shipped root `config.json` at all.
+
+Disposition recorded in `specs/no-doc-config-tests/no-doc-config-tests-design.md`.

@@ -28,11 +28,10 @@ This change makes the recovery configurable and mechanical:
    is already on the fallback model, and when no fallback is configured (the
    latter fails only if an actual error is present and cannot be recovered).
 
-Shipped values (config.json is the **single source of truth** for them):
-`fallbackModel = "opencode-go/mimo-v2.6-flash"`, `fallbackThinking = "high"`
-— a level that model accepts. Per the user directive (2026-09-29), AGENTS.md
-names no fallback value at all; it only points at the
-`taskLevels.fallbackModel` / `taskLevels.fallbackThinking` entries.
+The concrete values live in `config.json` alone (`taskLevels.fallbackModel`
+/ `taskLevels.fallbackThinking`) — this document and the tests do not pin
+them. Per the user directive (2026-09-29), AGENTS.md names no fallback value
+at all; it only points at those entries.
 
 ## Stated / deduced / assumed
 
@@ -153,7 +152,9 @@ names no fallback value at all; it only points at the
    never name a fallback model or level (no JSON value snippet, no
    "`max` is the top level …" reasoning); they point at the
    `taskLevels.fallbackModel` / `taskLevels.fallbackThinking` entries in
-   `config.json` as the single source of truth. [REQ-16] pins this.
+   `config.json` as the single source of truth. (The former [REQ-16] test
+   that grepped AGENTS.md for this was removed on 2026-10-03: tests never
+   assert document contents.)
 10. **Detection covers both free-provider failure kinds; the messages say
     so** (round 3) — `_FALLBACK_ERROR_RE` gains the `FreeTierError` JSON
     type next to `FreeUsageLimitError` and the 429-with-rate-limit-wording
@@ -197,8 +198,10 @@ names no fallback value at all; it only points at the
   switch itself cannot be confirmed.
 - **`specs/free-limit-fallback/`** (new) — this design + the feature file.
 - **`tests/free-limit-fallback.test.sh`** (new) — one test per
-  `[REQ-1]`…`[REQ-18]` plus a supplementary popup-swallow regression,
-  fake-tmux sandbox (no real session touched).
+  `[REQ-2]`…`[REQ-18]` (gaps where scenarios were removed) plus a
+  supplementary popup-swallow regression, fake-tmux sandbox (no real
+  session touched). Resolver tests and `setup()` use fixture configs; the
+  shipped root `config.json` is never the subject under test.
 - **`AGENTS.md`** — "Child model and thinking levels" section documents the
   fallback entries and the helper, value-agnostically (decision 9, [REQ-16]).
 
@@ -441,3 +444,22 @@ disk, ignoring the conversational rationale above.
      exactly the speculative-value note from round 1.
 - **Recommendation strength**: Speculative for all three; audit verdict — no
   architectural friction detected, ship it.
+
+## Change: document/config-content assertions removed (2026-10-03)
+
+User directive: tests never assert the contents of a document or a config
+file. The suite used to pin the shipped `config.json` fallback pair
+([REQ-1] echo, and the pane tests' `SUB_LEVELS_CONFIG="$ROOT/config.json"`)
+and to grep `AGENTS.md` for the fallback wording ([REQ-12], [REQ-16]) — all
+red once the shipped config was retuned.
+
+- [REQ-1], [REQ-12], [REQ-16] scenarios + tests removed.
+- Resolver tests now use a fixture under `$SCRATCH`/`$SB`; `setup()` writes
+  `$SB/fixture-config.json` (`fallbackModel = opencode-go/mimo-v2.6-flash`,
+  `fallbackThinking = high`) and points `SUB_LEVELS_CONFIG` at it. The free
+  status-bar id still extends the fixture fallback id, so the [REQ-14]
+  prefix-collision regression survives future `config.json` retunes.
+- The pane-test behaviour ([REQ-2]…[REQ-18] minus the removed labels) is
+  unchanged and still covered.
+
+Disposition recorded in `specs/no-doc-config-tests/no-doc-config-tests-design.md`.

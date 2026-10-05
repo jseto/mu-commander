@@ -68,11 +68,6 @@ Feature: Evidence-based prompt submission in tmux_send_line (scripts/_sub-common
     Then it exits zero printing "instruction sent to <session>"
     And sub-report.sh exits zero printing "notice delivered to <target>"
 
-  Scenario: Document the evidence-based confirmation contract in AGENTS.md [REQ-9]
-    Given the repository's AGENTS.md section on confirming submissions
-    When the tmux_send_line description is read
-    Then it states that success requires the prompt to leave the composer and reach the transcript
-    And it states that an unconfirmed send fails loudly
 
   Scenario: Keep the touched shell scripts shellcheck-clean [REQ-10]
     Given shellcheck is available

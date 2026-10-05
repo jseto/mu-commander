@@ -74,7 +74,8 @@ Bottom-up, identical across idle, busy, short (h=12) and wide (w=80) panes:
   behaviour change beyond what the helper enforces.
 - **`AGENTS.md`** (modified): the tmux_send_line sentence in "Every prompt
   must be confirmed as submitted" now describes the evidence rule and the
-  loud failure ([REQ-9]).
+  loud failure. (The former [REQ-9] test that grepped this wording was
+  removed on 2026-10-03: tests never assert document contents.)
 - **`specs/fix-send-confirm/`** (new): this design + the feature file.
 - **`tests/sub-common.test.sh`** (extended): fixture-capture tests for
   `_pi_parse_regions` and behaviour tests for `tmux_send_line` against a

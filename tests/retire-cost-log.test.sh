@@ -225,13 +225,6 @@ t_req6_refused_retirement_logs_nothing() {
   [ -z "$(log_files)" ] || fail "conversation log gained an entry despite refusal"
 }
 
-t_req7_agents_md_documents_cost_logging() {
-  grep -q "session cost" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the session cost on retire"
-  grep -q "conversation log" "$ROOT/AGENTS.md" \
-    || fail "AGENTS.md does not document the conversation-log entry on retire"
-}
-
 t_req8_shellcheck_clean() {
   if ! command -v shellcheck >/dev/null 2>&1; then
     printf '  SKIP: shellcheck not on PATH\n' >&2
@@ -260,7 +253,6 @@ run "[REQ-3] capture cost before records are removed"            t_req3_cost_cap
 run "[REQ-4] warn when the session cost source is missing"       t_req4_missing_cost_source_warns_and_logs_unknown
 run "[REQ-5] log failure never fails retire"                     t_req5_log_failure_never_fails_retire
 run "[REQ-6] refused retirement logs nothing"                    t_req6_refused_retirement_logs_nothing
-run "[REQ-7] AGENTS.md documents cost logging"                   t_req7_agents_md_documents_cost_logging
 run "[REQ-8] shellcheck scripts/sub-retire.sh"                   t_req8_shellcheck_clean
 
 if [ "$failures" -gt 0 ]; then
