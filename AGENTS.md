@@ -116,7 +116,10 @@ that name instead — check with `git -C "$WT" remote show origin | grep HEAD`
 if unsure. Set `DEV_BRANCH` when using the helpers with a repository whose
 base branch has another name; a `DEV_BRANCH` that exists always wins, and
 only a genuinely missing branch triggers the `origin/HEAD` fallback — a
-failed fetch of an existing branch does not.
+failed fetch of an existing branch does not. The comparison helpers
+(`sub-changes.sh`, `sub-land.sh`, `sub-retire.sh`) resolve the same base
+through the shared resolver, so their commit lists, diff stats and the
+retirement safety check follow the same fallback.
 
 ### Init scripts: not run by default
 
@@ -256,7 +259,7 @@ SCRIPTS=/home/jseto/programming-projects/mu-commander/scripts
 |---|---|
 | `sub-spawn.sh <task> <repo> [brief-file]` | Lease worktree (holder = task), base on `$DEV_BRANCH` (falling back to the `origin/HEAD` default branch when it is gone), write brief, boot `pi -n <task> --no-extensions "<kickoff>"` in tmux `pi-<task>` (kickoff passed as pi's initial message, so it cannot strand in the composer) with an isolated agent directory that provides no extensions or packages while retaining non-extension resources, open a live viewer window in the invoking tmux session without stealing the cursor focus (skippable with `SUB_SPAWN_NO_VIEWER=1`), print all handles |
 | `sub-status.sh <task> [repo] [lines]` | Lease + git state + pane tail + report tail for one subsession |
-| `sub-changes.sh <task> [repo]` | Read-only: status, commits not on `$DEV_BRANCH`, diff stats |
+| `sub-changes.sh <task> [repo]` | Read-only: status, commits not on the resolved base branch (`$DEV_BRANCH` or the `origin/HEAD` default), diff stats |
 | `sub-send.sh <task> "message"` | Send a literal follow-up instruction to an existing child pi session and confirm it was submitted (re-types/retries `Enter` via `tmux_send_line`) |
 | `sub-report.sh <task> "message"` | Push a `[task] message` notice into `$MAIN_SESSION` (used by children) |
 | `sub-land.sh <task> [repo] [--patch]` | Read-only: what would be lost, commits to publish, push + `gh pr create` commands; `--patch` exports the work to `tmp/pi-sub/reports/<task>.patch` |
@@ -278,8 +281,8 @@ Details:
   deletes them when the task is retired (use `--keep-files` to keep them);
   `sub-clean.sh` sweeps leftovers from crashed sessions.
 - Overrides: `DEV_BRANCH` (default `development`; when it resolves to
-  neither `origin/<dev>` nor a local branch, the spawn falls back to the
-  `origin/HEAD` default), `MAIN_SESSION` (default
+  neither `origin/<dev>` nor a local branch, the spawn and the comparison
+  helpers fall back to the `origin/HEAD` default), `MAIN_SESSION` (default
   `pi-main`), `SCRATCH_DIR` (default `tmp/pi-sub`), `PI_BIN`, `PI_BOOT_DELAY`
   (default `3`).
 - `sub-spawn.sh` always creates a unique `task/<name>` branch from the

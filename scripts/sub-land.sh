@@ -7,12 +7,13 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=_sub-common.sh
+# shellcheck disable=SC1091  # followed with -x; plain runs must stay clean
 source "$SCRIPT_DIR/_sub-common.sh"
 
 usage() { die "usage: ${0##*/} <task-name> [repo-dir] [--patch]" ; }
 
 need git treehouse jq
-[ "$#" -ge 1 ] && [ "$#" -le 3 ] || usage
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then usage; fi
 
 TASK=$1
 REPO=$PWD
@@ -30,6 +31,8 @@ WT=$(wt_for_task "$TASK" "$ROOT")
 [ -n "$WT" ] || die "no worktree leased for '$TASK' (in $ROOT)"
 
 BRANCH=$(git -C "$WT" branch --show-current || true)
+BASE_REF=$(resolve_base_ref "$WT")
+BASE_BRANCH=${BASE_REF#origin/}
 info "== worktree: $WT"
 info "== branch:   ${BRANCH:-detached}"
 
@@ -37,27 +40,27 @@ info "--- status ---"
 git -C "$WT" status -sb
 
 info "--- what would be lost if returned without publishing ---"
-if [ "$BRANCH" = "$DEV_BRANCH" ] || [ -z "$BRANCH" ]; then
+if [ "$BRANCH" = "$BASE_BRANCH" ] || [ -z "$BRANCH" ]; then
   UNLANDED=0
-else
-  UNLANDED=$(git -C "$WT" log --oneline "$DEV_BRANCH"..HEAD | wc -l)
+elif ! UNLANDED=$(unlanded_count "$WT" "$BASE_REF"); then
+  die "cannot count commits not on '$BASE_REF' for '$BRANCH' (in $WT)"
 fi
 DIRTY=$(git -C "$WT" status --porcelain | wc -l)
-info "uncommitted files: $DIRTY | commits not on $DEV_BRANCH: $UNLANDED"
+info "uncommitted files: $DIRTY | commits not on $BASE_BRANCH: $UNLANDED"
 
-if [ "$BRANCH" != "$DEV_BRANCH" ] && [ -n "$BRANCH" ]; then
+if [ "$BRANCH" != "$BASE_BRANCH" ] && [ -n "$BRANCH" ]; then
   info "--- commits to publish ---"
-  git -C "$WT" log --stat --oneline "$DEV_BRANCH"..HEAD
+  git -C "$WT" log --stat --oneline "$BASE_REF"..HEAD
   info ""
-  info "Publish as a pull request from your checkout ($ROOT) — never merge into $DEV_BRANCH:"
+  info "Publish as a pull request from your checkout ($ROOT) — never merge into $BASE_BRANCH:"
   info "  git push -u origin $BRANCH"
-  info "  gh pr create --base $DEV_BRANCH --head $BRANCH"
+  info "  gh pr create --base $BASE_BRANCH --head $BRANCH"
   info "  # patch-only rescue:  ${0##*/} $TASK --patch"
 fi
 
 if [ "$PATCH" = 1 ]; then
   OUT=$(patch_file "$ROOT" "$TASK")
-  git -C "$WT" diff "$DEV_BRANCH"...HEAD > "$OUT" 2>/dev/null || true
+  git -C "$WT" diff "$BASE_REF"...HEAD > "$OUT" 2>/dev/null || true
   # HEAD includes both staged and unstaged changes; plain `git diff` misses
   # staged files and could produce an incomplete rescue patch.
   git -C "$WT" diff HEAD >> "$OUT" 2>/dev/null || true
