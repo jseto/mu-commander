@@ -38,6 +38,10 @@ WT=$(wt_for_task "$TASK" "$ROOT")
 [ -n "$WT" ] || die "no worktree leased for '$TASK' (in $ROOT)"
 # Capture the task branch before 'treehouse return' detaches the worktree HEAD.
 BRANCH=$(git -C "$WT" branch --show-current 2>/dev/null || true)
+# The base the task is compared against, resolved through the shared helper so
+# a repository that deleted $DEV_BRANCH still retires (loudly if none exists).
+BASE_REF=$(resolve_base_ref "$WT")
+BASE_BRANCH=${BASE_REF#origin/}
 
 # A branch is "published" (safe to retire) when its tip is already reachable
 # from a remote branch, i.e. the task branch was pushed for a PR or the work
@@ -46,8 +50,8 @@ BRANCH=$(git -C "$WT" branch --show-current 2>/dev/null || true)
 is_published() {
   local branch=$1 tip
   tip=$(git -C "$WT" rev-parse HEAD)
-  if git -C "$ROOT" rev-parse --verify --quiet "origin/$DEV_BRANCH" >/dev/null \
-     && git -C "$ROOT" merge-base --is-ancestor "$tip" "origin/$DEV_BRANCH" 2>/dev/null; then
+  if git -C "$ROOT" rev-parse --verify --quiet "origin/$BASE_BRANCH" >/dev/null \
+     && git -C "$ROOT" merge-base --is-ancestor "$tip" "origin/$BASE_BRANCH" 2>/dev/null; then
     return 0
   fi
   if git -C "$ROOT" show-ref --verify --quiet "refs/remotes/origin/$branch" \
@@ -75,8 +79,8 @@ pr_state() { # $1=branch
 
 # True when origin/<branch> is fully merged into origin/<dev-base>.
 remote_merged() { # $1=branch
-  git -C "$ROOT" rev-parse --verify --quiet "refs/remotes/origin/$DEV_BRANCH" >/dev/null \
-    && git -C "$ROOT" merge-base --is-ancestor "refs/remotes/origin/$1" "refs/remotes/origin/$DEV_BRANCH" 2>/dev/null
+  git -C "$ROOT" rev-parse --verify --quiet "refs/remotes/origin/$BASE_BRANCH" >/dev/null \
+    && git -C "$ROOT" merge-base --is-ancestor "refs/remotes/origin/$1" "refs/remotes/origin/$BASE_BRANCH" 2>/dev/null
 }
 
 # Best-effort cleanup of the task's branches, run only after the retirement
@@ -88,14 +92,14 @@ cleanup_branches() { # $1=branch
   case "$branch" in task/*) ;; *) return 0 ;; esac
 
   # Local: only ever 'branch -d' (fully merged into the dev base), never -D.
-  if git -C "$ROOT" merge-base --is-ancestor "refs/heads/$branch" "refs/heads/$DEV_BRANCH" 2>/dev/null; then
+  if git -C "$ROOT" merge-base --is-ancestor "refs/heads/$branch" "$BASE_REF" 2>/dev/null; then
     if git -C "$ROOT" branch -d "$branch" >/dev/null 2>&1; then
-      info "deleted local branch $branch (merged into $DEV_BRANCH)"
+      info "deleted local branch $branch (merged into $BASE_BRANCH)"
     else
       warn "could not delete local branch $branch"
     fi
   else
-    warn "local branch $branch is not merged into $DEV_BRANCH; keeping it"
+    warn "local branch $branch is not merged into $BASE_BRANCH; keeping it"
   fi
 
   # Remote: delete only for a merged PR, or — with no open PR — when the tip
@@ -159,8 +163,10 @@ log_retirement() { # $1=cost label ("$0.1234" or "unknown")
 # Safety: 'treehouse return --force' clean-resets the worktree.
 if [ "$FORCE" != 1 ]; then
   DIRTY=$(git -C "$WT" status --porcelain | wc -l)
-  if [ -n "$BRANCH" ] && [ "$BRANCH" != "$DEV_BRANCH" ]; then
-    UNLANDED=$(git -C "$WT" log --oneline "$DEV_BRANCH"..HEAD | wc -l)
+  if [ -n "$BRANCH" ] && [ "$BRANCH" != "$BASE_BRANCH" ]; then
+    if ! UNLANDED=$(unlanded_count "$WT" "$BASE_REF"); then
+      die "cannot count commits not on '$BASE_REF' for '$BRANCH' — refusing to discard work blindly"
+    fi
   else
     UNLANDED=0
   fi
@@ -171,7 +177,7 @@ if [ "$FORCE" != 1 ]; then
     exit 1
   fi
   if [ "$UNLANDED" -gt 0 ] && ! is_published "$BRANCH"; then
-    warn "refusing to destroy unpublished work: $UNLANDED commit(s) on '$BRANCH' not on $DEV_BRANCH or any origin branch"
+    warn "refusing to destroy unpublished work: $UNLANDED commit(s) on '$BRANCH' not on $BASE_BRANCH or any origin branch"
     info "publish first:  push the branch and open a PR (see ${0%/*}/sub-land.sh $TASK)"
     info "then retry:    ${0##*/} $TASK --force   (only after publishing, or to discard)"
     exit 1

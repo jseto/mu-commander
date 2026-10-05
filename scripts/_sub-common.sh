@@ -104,6 +104,25 @@ resolve_base_ref() { # $1=repo-root
   die "no base branch: '$DEV_BRANCH' is missing from origin and local refs, and origin/HEAD names no usable default (in $root)"
 }
 
+# Echo the number of commits reachable from HEAD but not from base ref $2 in
+# the repository $1, or fail (non-zero, echoing nothing) when that range
+# cannot be computed. Callers must treat a failure as "unknown", never as
+# "0": the unpublished-work guard in sub-retire.sh depends on a broken base
+# ref aborting rather than reading as zero, and this holds regardless of the
+# caller's shell options — a `git log … | wc -l` pipeline would let wc's exit
+# status hide git's failure whenever pipefail is off.
+unlanded_count() { # $1=repo-root $2=base-ref
+  local out
+  if ! out=$(git -C "$1" log --oneline "$2"..HEAD 2>/dev/null); then
+    return 1
+  fi
+  if [ -z "$out" ]; then
+    printf '0'
+  else
+    wc -l <<<"$out"
+  fi
+}
+
 # Pick an unused local task branch. A linked worktree cannot check out a branch
 # already checked out by another worktree, so never assume task/<name> is free.
 task_branch() { # $1=repo-root $2=task
