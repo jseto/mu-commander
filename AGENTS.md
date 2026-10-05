@@ -88,28 +88,35 @@ treehouse destroy           # remove worktrees from the pool (safely by default)
   state untouched — use it to attach to a worktree another agent is using.
 - `return --force` cleans and resets without prompting.
 
-### Base branch: always development if exist
+### Base branch: `development` when it exists, else the default branch
 
-Every child starts from the latest `development` base if exists. In case it doesn't exists use the default branch. Do **not** switch a
+Every child starts from the latest `development` base when it exists; if it
+does not exist, the spawn falls back to the repository's **default branch** as
+advertised by `origin/HEAD` (commonly `master`). Do **not** switch a
 pooled worktree directly to `development`: the main checkout commonly
 already owns that branch, and Git forbids checking it out in two linked
 worktrees. Instead, create a unique task branch from it:
 
 ```bash
-git -C "$WT" switch -c task/<task-name> development
+# the resolved base ref is printed in the spawn handles as "base:"
+git -C "$WT" switch -c task/<task-name> "$BASE_REF"
 ```
 
 Worktrees are created **detached HEAD** at the inferred default
 (`origin/HEAD` → checked-out branch → `init.defaultBranch`). The helper
 uses `treehouse get --lease`, fetches `origin/development` when available,
-then creates `task/<task-name>` from that ref (or local `development` when
-there is no remote). This works with the installed treehouse CLI, whose
-`get` does not expose a `--base` flag.
+then creates `task/<task-name>` from `origin/development` (or local
+`development` when there is no remote); only when neither exists does it fall
+back to the `origin/HEAD` default and warn about the fallback. This works
+with the installed treehouse CLI, whose `get` does not expose a `--base`
+flag.
 
 In repos whose dev branch is named differently (`main`, `master`, `dev`), use
 that name instead — check with `git -C "$WT" remote show origin | grep HEAD`
 if unsure. Set `DEV_BRANCH` when using the helpers with a repository whose
-base branch has another name.
+base branch has another name; a `DEV_BRANCH` that exists always wins, and
+only a genuinely missing branch triggers the `origin/HEAD` fallback — a
+failed fetch of an existing branch does not.
 
 ### Init scripts: not run by default
 
@@ -247,9 +254,9 @@ SCRIPTS=/home/jseto/programming-projects/mu-commander/scripts
 
 | Script | Does |
 |---|---|
-| `sub-spawn.sh <task> <repo> [brief-file]` | Lease worktree (holder = task), base on `development`, write brief, boot `pi -n <task> --no-extensions "<kickoff>"` in tmux `pi-<task>` (kickoff passed as pi's initial message, so it cannot strand in the composer) with an isolated agent directory that provides no extensions or packages while retaining non-extension resources, open a live viewer window in the invoking tmux session without stealing the cursor focus (skippable with `SUB_SPAWN_NO_VIEWER=1`), print all handles |
+| `sub-spawn.sh <task> <repo> [brief-file]` | Lease worktree (holder = task), base on `$DEV_BRANCH` (falling back to the `origin/HEAD` default branch when it is gone), write brief, boot `pi -n <task> --no-extensions "<kickoff>"` in tmux `pi-<task>` (kickoff passed as pi's initial message, so it cannot strand in the composer) with an isolated agent directory that provides no extensions or packages while retaining non-extension resources, open a live viewer window in the invoking tmux session without stealing the cursor focus (skippable with `SUB_SPAWN_NO_VIEWER=1`), print all handles |
 | `sub-status.sh <task> [repo] [lines]` | Lease + git state + pane tail + report tail for one subsession |
-| `sub-changes.sh <task> [repo]` | Read-only: status, commits not on `development`, diff stats |
+| `sub-changes.sh <task> [repo]` | Read-only: status, commits not on `$DEV_BRANCH`, diff stats |
 | `sub-send.sh <task> "message"` | Send a literal follow-up instruction to an existing child pi session and confirm it was submitted (re-types/retries `Enter` via `tmux_send_line`) |
 | `sub-report.sh <task> "message"` | Push a `[task] message` notice into `$MAIN_SESSION` (used by children) |
 | `sub-land.sh <task> [repo] [--patch]` | Read-only: what would be lost, commits to publish, push + `gh pr create` commands; `--patch` exports the work to `tmp/pi-sub/reports/<task>.patch` |
@@ -270,12 +277,14 @@ Details:
   file (`~/.config/git/ignore`) so they are never committed. `sub-retire.sh`
   deletes them when the task is retired (use `--keep-files` to keep them);
   `sub-clean.sh` sweeps leftovers from crashed sessions.
-- Overrides: `DEV_BRANCH` (default `development`), `MAIN_SESSION` (default
+- Overrides: `DEV_BRANCH` (default `development`; when it resolves to
+  neither `origin/<dev>` nor a local branch, the spawn falls back to the
+  `origin/HEAD` default), `MAIN_SESSION` (default
   `pi-main`), `SCRATCH_DIR` (default `tmp/pi-sub`), `PI_BIN`, `PI_BOOT_DELAY`
   (default `3`).
 - `sub-spawn.sh` always creates a unique `task/<name>` branch from the
-  development base; it never commits directly to the shared `development`
-  branch. If setup fails after leasing, it cleans up the lease.
+  resolved base branch; it never commits directly to the shared
+  `development` branch. If setup fails after leasing, it cleans up the lease.
 - All scripts are safe to run from anywhere; they resolve the repo
   themselves and print `ERROR:` lines to stderr on misuse.
 
@@ -468,8 +477,9 @@ while the orchestrator is driving it. **The main session's tmux pane/window must
 "$SCRIPTS/sub-spawn.sh" fix-auth <repo> [brief-file]
 ```
 
-That one call leases a worktree (holder `fix-auth`), bases it on
-`development`, writes the brief to `tmp/pi-sub/tasks/fix-auth.md`, boots
+That one call leases a worktree (holder `fix-auth`), bases it on the
+resolved base branch (`$DEV_BRANCH`, or the `origin/HEAD` default when that
+branch is gone), writes the brief to `tmp/pi-sub/tasks/fix-auth.md`, boots
 `pi -n fix-auth --no-extensions` in tmux session `pi-fix-auth` **with the tmux session rooted
 at the leased worktree**, using an isolated agent directory that provides no extensions or packages
 while retaining non-extension resources, kicks the child off with the brief/report paths, and prints
@@ -479,8 +489,9 @@ main checkout. The kickoff is passed to pi as its **initial message
 argument** (`pi -n <task> --no-extensions "<kickoff>"`), not typed into the composer, so a
 keystroke lost while pi initializes can never leave the child sitting idle
 with an unsent prompt. (The raw commands behind it: `treehouse get
---lease --lease-holder <task>`, fetch `origin/development`, create
-`task/<task>` from the development ref, `tmux new -d -c <worktree>`, then
+--lease --lease-holder <task>`, fetch `origin/$DEV_BRANCH`, resolve the base
+ref (`origin/$DEV_BRANCH` → local `$DEV_BRANCH` → `origin/HEAD`), create
+`task/<task>` from the resolved ref, `tmux new -d -c <worktree>`, then
 `tmux_send_line` to launch `pi` with the kickoff.)
 
 **2. Hand follow-up work to the child** — `sub-spawn.sh` already sends the
@@ -550,9 +561,9 @@ report it to the user in the very next reply, unprompted: task, PR link, test
 status. Never sit on a finished-child report waiting for the user to ask
 "what's ready?".
 
-**5. Child pushes branch and creates the PR — never merge into `development`.**
-The child session itself pushes its branch (`git push -u origin task/<name>`) and opens a pull request against `development` using `gh pr create` as the final step of its work, including the PR link in its report and `DONE` notice. Never run `git merge` / `git cherry-pick` into `development` from the main checkout.
-Do **not** retire the child yet when the PR is open: the child stays alive until the PR is merged (step 6), so it can address review feedback, rebase against new `development`, or answer questions about the work.
+**5. Child pushes branch and creates the PR — never merge into the base branch.**
+The child session itself pushes its branch (`git push -u origin task/<name>`) and opens a pull request against the resolved base branch (`$BASE_BRANCH`: `$DEV_BRANCH`, or the `origin/HEAD` default when it is gone) using `gh pr create` as the final step of its work, including the PR link in its report and `DONE` notice. Never run `git merge` / `git cherry-pick` into the base branch from the main checkout.
+Do **not** retire the child yet when the PR is open: the child stays alive until the PR is merged (step 6), so it can address review feedback, rebase against new base-branch commits, or answer questions about the work.
 
 **6. Retire a child** — only once its PR is **merged** (or the user explicitly
 abandons it). **As soon as the PR is merged, retire the child immediately and
@@ -675,8 +686,9 @@ Steps:
 2. Write the full requirements to tmp/pi-sub/tasks/<task-name>.md, including the
    instruction to write the final report to tmp/pi-sub/reports/<task-name>.md.
 3. Run: "$SCRIPTS/sub-spawn.sh" <task-name> <repo>
-   (leases the worktree holder <task-name>, bases it on development, boots
-   pi in tmux session pi-<task-name>, kicks the child off with the brief).
+   (leases the worktree holder <task-name>, bases it on the resolved base
+   branch, boots pi in tmux session pi-<task-name>, kicks the child off with
+   the brief).
 4. Read its output and tell me the task name, worktree path, branch, and
    tmux session name.
 ```
@@ -725,7 +737,7 @@ Then it classifies the intent:
   `"$SCRIPTS/sub-status.sh" <task> <repo>` (lease + pane + report in one shot). No
   spawning.
 - **Request for artifacts** — *"changes/diffs/results in alpha"*:
-  `"$SCRIPTS/sub-changes.sh" <task> <repo>` (status, commits vs `development`, diff
+  `"$SCRIPTS/sub-changes.sh" <task> <repo>` (status, commits vs `$DEV_BRANCH`, diff
   stats), or read the report file. No spawning.
 - **Imperative to do new work** — *"fix issue #42 in alpha"*: run
   `"$SCRIPTS/sub-spawn.sh"` — **unless** a live subsession for that task
