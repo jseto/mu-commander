@@ -7,12 +7,12 @@
       "easy": {
         "description": "Chores, trims, config and docs edits, small fixes.",
         "model": "opencode-zen-free/mimo-v2.6-flash-free",
-        "thinking": "high"
+        "thinking": "xhigh"
       },
       "standard": {
         "description": "Features and bug fixes with the full specs flow.",
-        "model": "opencode-go/deepseek-v4.1-flash",
-        "thinking": "medium"
+        "model": "opencode-zen-free/mimo-v2.6-flash-free",
+        "thinking": "xhigh"
       },
       "hard": {
         "description": "Architecture, root-cause analysis, long-haul work.",
