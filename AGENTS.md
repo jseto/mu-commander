@@ -371,12 +371,24 @@ Hard rules:
 
 ### Lavish reviews (Telegram)
 
-When the user must be consulted through a Lavish HTML artifact, put **both
-links in the chat** in the same message: the local annotation-capable session
-link (Tailscale/LAN) and the ht-ml.app share link (private by default —
-include the password). Keep the review loop in the chat; do not add Telegram
-menu surfaces for it. The `lavish-telegram` extension (pi-config repo)
-automates link delivery and the background feedback poll.
+When the user must be consulted through a Lavish HTML artifact, put the
+**local LAN address** in the chat — the intranet session link
+`http://192.168.1.105:4387/session/<id>` (plain HTTP; the server serves no
+TLS). **Do not relay the ht-ml.app share link, and do not list the `📁`
+local artifact path** (user directive, 2026-10-06: "I want a local network
+address"); a child report's `Share link …` line and its artifact path are
+swapped for the LAN session link at relaying time (run the `lavish` tool with
+action `status` when the report has no local link). The server must be bound
+to the LAN for this address to answer: after `lavish-axi stop`, start it as
+`lavish-axi server --port 4387 --also-listen 192.168.1.105` — loopback and
+Tailscale stay bound too, and this machine's LAN IP is 192.168.1.105 (the
+`LAVISH_AXI_HOST=<lan-ip>` reconcile path on an open/poll/end run is the
+alternative). The Tailscale session link is the any-network alternative; the
+share stays a last-resort fallback only when *no* local address answers,
+plainly labeled view-only with its password. Keep the review loop in the
+chat; do not add Telegram menu surfaces for it. The `lavish-telegram`
+extension (pi-config repo) automates link delivery (it is already
+local-first) and the background feedback poll.
 
 ### Child Lavish wake-up
 
