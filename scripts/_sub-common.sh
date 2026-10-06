@@ -226,19 +226,39 @@ resolve_child_launch_flags() { # $1=level $2=model $3=thinking
 
 # Echo the pi command line that boots a child session. The resolved
 # model/thinking option words ($3, from resolve_child_launch_flags) sit among
+# The pi-subagents package source children load explicitly on their launch
+# line, or an empty string when they must start without it: SUB_CHILD_SUBAGENTS=0
+# opts out, and a missing local install degrades to a plain child instead of
+# failing the spawn. pi_launch_command is the only consumer — `-e npm:pi-subagents`
+# gives a child the package's extension and skills for one invocation while
+# --no-extensions keeps every other discovered, configured, and built-in
+# extension off (docs/packages.md: `pi -e npm:<name>` loads a package without
+# adding it to settings, so the deliberately empty child settings file stays
+# empty).
+child_subagents_source() {
+  [ "${SUB_CHILD_SUBAGENTS:-1}" = 0 ] && return 0
+  [ -f "$HOME/.pi/agent/npm/node_modules/pi-subagents/index.js" ] || return 0
+  printf 'npm:pi-subagents'
+}
+
 # the options — before the kickoff message argument — so pi parses them as
 # options, not as part of the prompt.
 pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
+  local subagents_opt="" source
+  source=$(child_subagents_source)
+  [ -n "$source" ] && subagents_opt=" -e $(printf '%q' "$source")"
   if [ -n "${3:-}" ]; then
-    printf '%q -n %q --no-extensions %s --approve %q' "$1" "$2" "$3" "$4"
+    printf '%q -n %q --no-extensions%s %s --approve %q' "$1" "$2" "$subagents_opt" "$3" "$4"
   else
-    printf '%q -n %q --no-extensions --approve %q' "$1" "$2" "$4"
+    printf '%q -n %q --no-extensions%s --approve %q' "$1" "$2" "$subagents_opt" "$4"
   fi
 }
 
 # Prepare an isolated Pi agent directory for a child. It preserves non-extension
 # resources such as settings metadata, skills, prompts, and themes, but gives
-# the child no extensions or packages at all. The directory lives in the
+# the child no extensions or packages at all — pi-subagents, the one package
+# children load, is passed on the launch line instead (pi_launch_command).
+# The directory lives in the
 # gitignored scratch dir of the main checkout (outside the worktree) and is
 # removed on retirement.
 prepare_child_agent_dir() { # $1=destination dir; echoes dir

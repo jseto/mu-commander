@@ -58,11 +58,18 @@ resolve() {
   RERR=$(cat "$SCRATCH/stderr")
 }
 
-# launch <flags> — pi_launch_command with a fixed bin/task/kickoff. Sets: RC, OUT.
+# launch <flags> [VAR=val ...] — pi_launch_command with a fixed bin/task/kickoff,
+# run with $HOME redirected to $LAUNCH_HOME (a package-free scratch dir by
+# default) so the child_subagents_source presence check is deterministic;
+# extra VAR=val pairs become environment. Sets: RC, OUT, LAUNCH_KICKOFF.
 launch() {
-  local kickoff="Read the task brief at /tmp/x.md and complete it."
+  local flags=$1 kickoff="Read the task brief at /tmp/x.md and complete it."
+  local home=${LAUNCH_HOME:-$SCRATCH/launch-home}
+  shift
+  mkdir -p "$home"
   RC=0
-  OUT=$(bash -c "source '$COMMON'; pi_launch_command pi demo $(printf '%q' "$1") $(printf '%q' "$kickoff")") \
+  OUT=$(env -u SUB_CHILD_SUBAGENTS HOME="$home" "$@" \
+    bash -c "source '$COMMON'; pi_launch_command pi demo $(printf '%q' "$flags") $(printf '%q' "$kickoff")") \
     || RC=$?
   LAUNCH_KICKOFF=$kickoff
 }
@@ -229,6 +236,33 @@ JSON
     || fail "named level must resolve past sibling keys, got: $OUT"
 }
 
+t_req13_child_launch_loads_pi_subagents() {
+  # An installed pi-subagents package rides on -e (ahead of the kickoff),
+  # SUB_CHILD_SUBAGENTS=0 opts out, and the install-presence check runs
+  # against $LAUNCH_HOME — an install missing while enabled degrades to a
+  # plain launch, which t_req9 already asserts under the default
+  # package-free $LAUNCH_HOME.
+  local home="$SCRATCH/launch-home-pkg" want
+  mkdir -p "$home/.pi/agent/npm/node_modules/pi-subagents"
+  : > "$home/.pi/agent/npm/node_modules/pi-subagents/index.js"
+  LAUNCH_HOME=$home
+
+  launch "--model a/b --thinking xhigh"
+  want="pi -n demo --no-extensions -e npm:pi-subagents --model a/b --thinking xhigh --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  [ "$OUT" = "$want" ] || fail "installed package must ride on -e ahead of the kickoff,
+     got: $OUT"
+
+  launch ""
+  want="pi -n demo --no-extensions -e npm:pi-subagents --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  [ "$OUT" = "$want" ] || fail "installed package must load with no option words,
+     got: $OUT"
+
+  launch "" SUB_CHILD_SUBAGENTS=0
+  want="pi -n demo --no-extensions --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  [ "$OUT" = "$want" ] || fail "SUB_CHILD_SUBAGENTS=0 must drop -e,
+     got: $OUT"
+}
+
 run() {
   local name=$1 fn=$2 out
   if out=$( "$fn" 2>&1 ); then
@@ -250,6 +284,7 @@ run "[REQ-9]  launch line carries options ahead of the kickoff"    t_req9_launch
 run "[REQ-10] bad spawn invocations die before any work"           t_req10_bad_spawn_invocations_die_early
 run "[REQ-11] touched scripts shellcheck-clean"                    t_req11_shellcheck_and_bash_n_clean
 run "[REQ-12] unknown sibling top-level keys are ignored"      t_req12_unknown_sibling_top_level_keys_are_ignored
+run "[REQ-13] child launch loads pi-subagents on -e"            t_req13_child_launch_loads_pi_subagents
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"
