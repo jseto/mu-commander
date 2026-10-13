@@ -317,6 +317,15 @@ direct brief (what to write, what to verify against, existing doc tests
 still green if the repo has them) and let it deliver straight to a PR.
 Reserve the full new-feature-fix flow for code and behaviour changes.
 
+**Exception — npm/dependency bumps skip specs and tests** (user directive,
+2026-10-07, "Npm bumps don't have to generate specs nor tests"): a pure
+dependency version bump (manifest + lockfile change, no source edits) does
+**not** generate Gherkin specs, a design doc, or new/guard tests. Brief it
+directly: bump only the named dependency, keep every other dependency
+untouched, and verify with the repo's **existing** test suite + build staying
+green before the PR. If the bump forces production code changes (e.g. a major
+migration), that code work falls back to the full new-feature-fix flow.
+
 Routing rule for every incoming message:
 
 | Message is… | Main session does |
