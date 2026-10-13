@@ -17,6 +17,14 @@ Feature: dependency installer for mu-commander
   present / needs manual action), and exits 0 only when every dependency
   resolves on PATH at the end of the run.
 
+  The installer also owns README.md's separate step *Installation -> 4. Put
+  the `mu` launcher on PATH*: it links the repository's own launcher file
+  `mu` into ~/.local/bin so a fresh clone ends up with a runnable `mu`
+  command instead of "mu: command not found". The link prefers the main
+  checkout's `mu` when the installer runs inside a linked worktree (pooled
+  worktrees are ephemeral), and — like every tool — never overwrites an
+  existing entry.
+
   Scenario: No-op run when every dependency is present [REQ-1]
     Given a system where every required tool resolves on PATH
     When the installer runs
@@ -106,4 +114,15 @@ Feature: dependency installer for mu-commander
       PATH at the end of the run
     And it exits with a non-zero status when any dependency is still missing,
       whether an install failed or manual action is required
+
+  Scenario: Put the repository's mu launcher on PATH [REQ-11]
+    Given "mu" does not resolve on PATH
+    And this repository contains the executable launcher file "mu"
+    When the installer runs
+    Then it creates the symlink ~/.local/bin/mu pointing at the main
+      checkout's mu file when one is found, else at this checkout's mu file
+    And it re-checks mu with "command -v" and reports it as installed
+    And an existing entry at ~/.local/bin/mu is left untouched and reported
+      with a manual hint instead
+    And a second run reports mu as already present
 

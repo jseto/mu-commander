@@ -6,7 +6,9 @@ One new root-level artifact — `install.sh` — plus a hermetic test suite
 `tests/install.test.sh` and a README pointer. The installer walks the
 dependency list README.md documents (`bash`, `git`, `tmux`, `treehouse`,
 `pi`, `jq`, `realpath`, `gh`, `sed`, `grep`, `awk`, `date`, `readlink`,
-`sha256sum`, `tar`, `mktemp`, `shellcheck` — 17 tools), partitions it into
+`sha256sum`, `tar`, `mktemp`, `shellcheck` — 17 tools) together with the
+repository's own `mu` launcher (README.md, Installation -> 4. Put the `mu`
+launcher on PATH) — 18 entries in all — partitions it into
 *present* (resolves on PATH) and *missing*, and only ever acts on the
 missing side:
 
@@ -16,6 +18,7 @@ missing side:
 | `treehouse` | resolve latest release of `kunchenguid/treehouse` (GitHub API), download `treehouse-v<tag>-<os>-<arch>.tar.gz` + `checksums.txt`, verify with `sha256sum`/`shasum`, install into `~/.local/bin` — never over an existing file |
 | `pi` | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent` (the command pi's own README documents; the package `bin` is `pi`); no npm → instructions (Node.js ≥ 22.19, the npm command, `curl -fsSL https://pi.dev/install.sh | sh` as the official alternative), keep going |
 | `shellcheck` | delegate: run `scripts/worktree-setup.sh` (the treehouse hook holding the pinned version + sha256 table); the installer declares no pin of its own |
+| `mu` | symlink `~/.local/bin/mu` → the **main checkout's** `mu` when git reveals one (the git common dir; pooled worktrees are ephemeral, see `specs/mu-launcher`), else this checkout's `mu`; `mkdir -p ~/.local/bin` first; never over an existing entry — file **or** symlink, even a broken one |
 
 Every install attempt is followed by a `command -v` re-check — the summary
 only claims *installed* when the tool actually resolves afterwards. The run
@@ -34,6 +37,7 @@ no-op.
 | `apt`/`dnf`/… auto-detect how? | first of `apt-get`, `dnf`, `pacman`, `brew` on PATH — no `os-release` parsing, trivially sandboxable in tests; on a machine with two managers the first wins (Linuxbrew behind apt is the desired order) |
 | pin the treehouse version? | no: the repo has no treehouse pin anywhere (AGENTS.md names "v2.3.0" descriptively, upstream is at v3.1.0) and treehouse self-updates (`treehouse update`); the installer resolves *latest* and sha256-verifies it against the release's own `checksums.txt` |
 | exit status when manual action is needed | non-zero: "exit non-zero only on real failure" is read as *a dependency still missing after the run is a real failure of the installer's contract*; the no-op all-present path is the guaranteed 0. Manual-hint runs keep going (REQ-3) but end non-zero (REQ-10) so automation cannot mistake a partial machine for a ready one |
+| should the installer put `mu` on PATH? | yes — the installer originally stopped at README's *Installation -> 2. Dependencies*, leaving the separate manual step *-> 4. Put the `mu` launcher on PATH* outside its contract: `./install.sh` could exit 0 while `command -v mu` still failed (the reported "why is mu not executable" symptom — the file itself was mode 755 everywhere). The launcher link is now its own category with the same no-overwrite + re-check contract (REQ-11) |
 
 ## Entities
 
@@ -41,7 +45,7 @@ no-op.
   resolve own dir → source `_sub-common.sh` → tool inventory
   (`SYSTEM_TOOLS`, `CUSTOM_TOOLS`) → partition with `have` → per-category
   installers (`install_system`, `install_treehouse`, `install_pi`,
-  `install_shellcheck`) → `summarize` + exit. `set -uo pipefail`, no
+  `install_shellcheck`, `install_mu`) → `summarize` + exit. `set -uo pipefail`, no
   `set -e`: failures are collected, never fatal mid-run.
 - **`tests/install.test.sh`** (new) — one assertion block per `[REQ-n]` plus
   supplementary checks (failed package-manager run doesn't abort other
@@ -63,7 +67,7 @@ Not touched: `scripts/_sub-common.sh` (sourced read-only),
 
 ```mermaid
 flowchart TD
-  A[install.sh] --> B[have() each of 17 tools<br/>command -v, need-style]
+  A[install.sh] --> B[have() each of 18 tools<br/>command -v, need-style]
   B --> C{anything missing?}
   C -- no --> Z1["all present" + summary<br/>exit 0]
   C -- yes --> D[system tools missing?]
@@ -83,6 +87,12 @@ flowchart TD
   J --> O[shellcheck missing?]
   O --> P[run scripts/worktree-setup.sh<br/>cwd = repo root → command -v]
   P -- still missing --> H4[point at shared install]
+  O --> MU[mu missing?]
+  MU --> MU1{existing ~/.local/bin/mu<br/>entry?}
+  MU1 -- yes --> H5[PATH / relink hint,<br/>no write]
+  MU1 -- no --> MU2[ln -s main-checkout/mu<br/>→ command -v re-check]
+  MU2 -- resolves --> I
+  MU2 -- off PATH --> H5
   I --> Q[summary:<br/>installed / already present /<br/>needs manual action]
   L --> Q
   N --> Q
@@ -90,6 +100,7 @@ flowchart TD
   H2 --> Q
   H3 --> Q
   H4 --> Q
+  H5 --> Q
   Q --> Z2["missing empty → exit 0,<br/>else exit 1"]
 ```
 
@@ -110,6 +121,18 @@ from whether anything is still missing at the end.
        installer; manual table retained (covered by REQ-11).
 6. [x] Code-auditor pass (see Audit notes) + re-run of the suite.
 7. [x] Commit, push, PR against `development`.
+
+Mu-launcher steps (task `diagnose-mu-launcher`, root cause "why is mu not
+executable" — the file was executable everywhere; the README -> 4 PATH link
+was simply never created):
+
+8. [x] Specs: REQ-11 scenario in the feature + these design rows.
+9. [x] RED: `tests/install.test.sh` gains `t_req11` (link created, main-
+       checkout preference via the git common dir, no-overwrite, idempotent
+       re-run); existing blocks updated for the 18-entry inventory.
+10. [x] GREEN: `install_mu` in `install.sh` (`CUSTOM_TOOLS += mu`).
+11. [x] Code-auditor pass on the mu change + full-suite re-run.
+12. [x] Commit, push, PR against `master`.
 
 ## Strengths / Weaknesses
 

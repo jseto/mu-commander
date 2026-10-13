@@ -218,7 +218,7 @@ sandbox() {
   export STUB_TH_PAYLOAD="$TH_PAYLOAD"
   export STUB_REAL_SHA256SUM="$REAL_SHA256SUM"
   unset STUB_CURL_FAIL STUB_PM_FAIL STUB_TH_BAD_SHA STUB_TAR_FAIL \
-        STUB_WGET_FAIL 2>/dev/null || true
+        STUB_WGET_FAIL STUB_GIT_COMMON 2>/dev/null || true
   RUN_PATH="$SB/bin:$SB/home/.local/bin"
 }
 
@@ -243,6 +243,7 @@ run_installer() {
       STUB_TH_BAD_SHA="${STUB_TH_BAD_SHA:-}" \
       STUB_TAR_FAIL="${STUB_TAR_FAIL:-}" \
       STUB_WGET_FAIL="${STUB_WGET_FAIL:-}" \
+      STUB_GIT_COMMON="${STUB_GIT_COMMON:-}" \
       "$BASH_BIN" "$INSTALL" ) >"$SB/out" 2>"$SB/err"
   status=$?
   cat "$SB/out" "$SB/err" > "$SB/all"
@@ -292,12 +293,12 @@ expected_th_asset() {
 t_req1_noop_when_all_present() {
   sandbox
   local c
-  for c in jq gh treehouse pi shellcheck; do mk_marker "$c"; done
+  for c in jq gh treehouse pi shellcheck mu; do mk_marker "$c"; done
   write_pkg_stub apt-get
   write_npm_stub
   run_installer
   assert_status 0
-  assert_contains "already present (17):"
+  assert_contains "already present (18):"
   assert_contains "nothing to install"
   assert_log_empty apt-get.log
   assert_log_empty curl.log
@@ -311,7 +312,7 @@ t_req2_system_install_via_detected_pm() {
   sandbox
   write_pkg_stub apt-get
   write_sudo_stub
-  local c; for c in treehouse pi shellcheck; do mk_marker "$c"; done
+  local c; for c in treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_log_line apt-get.log "install -y jq gh"
@@ -322,7 +323,7 @@ t_req2_system_install_via_detected_pm() {
   sandbox
   write_pkg_stub dnf
   write_sudo_stub
-  for c in treehouse pi shellcheck; do mk_marker "$c"; done
+  for c in treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_log_line dnf.log "install -y jq gh"
@@ -333,7 +334,7 @@ t_req2_system_install_via_detected_pm() {
   sandbox
   write_pkg_stub pacman
   write_sudo_stub
-  for c in treehouse pi shellcheck; do mk_marker "$c"; done
+  for c in treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_log_line pacman.log "-S --noconfirm --needed jq github-cli"
@@ -344,7 +345,7 @@ t_req2_system_install_via_detected_pm() {
   sandbox
   write_pkg_stub brew
   write_sudo_stub
-  for c in treehouse pi shellcheck; do mk_marker "$c"; done
+  for c in treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_log_line brew.log "install jq gh"
@@ -356,7 +357,7 @@ t_req2_system_install_via_detected_pm() {
 t_req3_manual_hints_without_pm() {
   sandbox
   local c
-  for c in treehouse shellcheck; do mk_marker "$c"; done
+  for c in treehouse shellcheck mu; do mk_marker "$c"; done
   write_npm_stub            # pi can still install: proof of continuation
   run_installer
   assert_status 1
@@ -370,7 +371,7 @@ t_req3_manual_hints_without_pm() {
 t_req4_treehouse_from_github_release() {
   sandbox
   local c
-  for c in jq gh pi shellcheck; do mk_marker "$c"; done
+  for c in jq gh pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_contains "installed (1): treehouse"
@@ -389,7 +390,7 @@ t_req4_treehouse_from_github_release() {
 t_req5_never_overwrite_existing() {
   sandbox
   local c
-  for c in jq gh pi shellcheck; do mk_marker "$c"; done
+  for c in jq gh pi shellcheck mu; do mk_marker "$c"; done
   printf '#!/bin/sh\necho existing marker\n' > "$SB/home/.local/bin/treehouse"
   chmod +x "$SB/home/.local/bin/treehouse"
   RUN_PATH="$SB/bin"        # the file exists but is deliberately off PATH
@@ -408,7 +409,7 @@ t_req5_never_overwrite_existing() {
 t_req6_pi_via_npm() {
   sandbox
   local c
-  for c in jq gh treehouse shellcheck; do mk_marker "$c"; done
+  for c in jq gh treehouse shellcheck mu; do mk_marker "$c"; done
   write_npm_stub
   run_installer
   assert_status 0
@@ -421,7 +422,7 @@ t_req6_pi_via_npm() {
 t_req7_pi_instructions_without_npm() {
   sandbox
   local c
-  for c in jq gh treehouse; do mk_marker "$c"; done
+  for c in jq gh treehouse mu; do mk_marker "$c"; done
   # The shellcheck tool stays missing: the delegated hook runs afterwards,
   # proving the installer continues with the remaining categories.
   run_installer
@@ -437,7 +438,7 @@ t_req7_pi_instructions_without_npm() {
 t_req8_shellcheck_via_shared_hook() {
   sandbox
   local c
-  for c in jq gh treehouse pi; do mk_marker "$c"; done
+  for c in jq gh treehouse pi mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_contains "[worktree-setup]"
@@ -456,16 +457,16 @@ t_req9_summary_and_idempotent_rerun() {
   sandbox
   write_pkg_stub apt-get
   write_sudo_stub
-  local c; for c in treehouse pi shellcheck; do mk_marker "$c"; done
+  local c; for c in treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   assert_contains "Summary:"
-  assert_contains "already present (15):"
+  assert_contains "already present (16):"
   assert_contains "installed (2): jq gh"
   assert_contains "needs manual action (0):"
   run_installer                # second run: everything now resolves
   assert_status 0
-  assert_contains "already present (17):"
+  assert_contains "already present (18):"
   assert_contains "nothing to install"
   assert_log_line apt-get.log "install -y jq gh"   # still exactly one call
 }
@@ -474,13 +475,75 @@ t_req9_summary_and_idempotent_rerun() {
 t_req10_exit_status() {
   sandbox
   local c
-  for c in jq gh treehouse pi shellcheck; do mk_marker "$c"; done
+  for c in jq gh treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 0
   sandbox                      # a missing dependency with no installer path
-  for c in treehouse pi shellcheck; do mk_marker "$c"; done
+  for c in treehouse pi shellcheck mu; do mk_marker "$c"; done
   run_installer
   assert_status 1
+}
+
+# --- [REQ-11] put the repository's mu launcher on PATH ----------------------
+t_req11_mu_launcher_on_path() {
+  sandbox
+  local c
+  for c in jq gh treehouse pi shellcheck; do mk_marker "$c"; done
+  # mu is deliberately absent from the sandbox PATH: the installer must link
+  # it. The sandbox git is a presence-only marker (no rev-parse output), so
+  # the link falls back to this checkout's mu file.
+  run_installer
+  assert_status 0
+  assert_contains "installed (1): mu"
+  [ -L "$SB/home/.local/bin/mu" ] || fail "no ~/.local/bin/mu symlink was created"
+  [ "$(readlink "$SB/home/.local/bin/mu")" = "$ROOT/mu" ] \
+    || fail "mu symlink points at '$(readlink "$SB/home/.local/bin/mu")', expected $ROOT/mu"
+  run_installer                # second run: mu now resolves through the link
+  assert_status 0
+  assert_contains "already present (18):"
+
+  # The main checkout's mu wins when git reveals a common dir (worktree case).
+  sandbox
+  for c in jq gh treehouse pi shellcheck; do mk_marker "$c"; done
+  mkdir -p "$SB/main/.git"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/main/mu"
+  chmod +x "$SB/main/mu"
+  cat > "$SB/bin/git" <<'EOS'
+#!/usr/bin/env bash
+case " $* " in
+  *" rev-parse --git-common-dir "*) printf '%s\n' "$STUB_GIT_COMMON" ;;
+esac
+exit 0
+EOS
+  chmod +x "$SB/bin/git"
+  export STUB_GIT_COMMON="$SB/main/.git"
+  run_installer
+  assert_status 0
+  [ "$(readlink "$SB/home/.local/bin/mu")" = "$SB/main/mu" ] \
+    || fail "mu symlink points at '$(readlink "$SB/home/.local/bin/mu")', expected the main checkout $SB/main/mu"
+
+  # Never overwrite an existing entry at the target path.
+  sandbox
+  for c in jq gh treehouse pi shellcheck; do mk_marker "$c"; done
+  printf 'not the launcher\n' > "$SB/home/.local/bin/mu"
+  RUN_PATH="$SB/bin"        # the entry exists but is deliberately off PATH
+  run_installer
+  assert_status 1
+  [ "$(cat "$SB/home/.local/bin/mu")" = "not the launcher" ] \
+    || fail "an existing ~/.local/bin/mu entry was modified"
+  assert_contains "left untouched"
+  assert_contains "needs manual action (1):"
+
+  # A broken entry at the target is caught by the -L half of the guard too:
+  # command -v skips it (so mu is "missing"), and it is never clobbered.
+  sandbox
+  for c in jq gh treehouse pi shellcheck; do mk_marker "$c"; done
+  ln -s "$SB/nowhere/mu" "$SB/home/.local/bin/mu"
+  run_installer
+  assert_status 1
+  assert_contains "left untouched"
+  [ -L "$SB/home/.local/bin/mu" ] \
+    || fail "the broken ~/.local/bin/mu symlink was replaced"
 }
 
 # --- supplementary ----------------------------------------------------------
@@ -490,7 +553,7 @@ t_sup_pm_failure_reports_and_continues() {
   write_pkg_stub apt-get
   write_sudo_stub
   write_npm_stub
-  local c; for c in treehouse shellcheck; do mk_marker "$c"; done
+  local c; for c in treehouse shellcheck mu; do mk_marker "$c"; done
   export STUB_PM_FAIL=1
   run_installer
   assert_status 1
@@ -503,7 +566,7 @@ t_sup_pm_failure_reports_and_continues() {
 t_sup_treehouse_checksum_mismatch_rejected() {
   sandbox
   local c
-  for c in jq gh pi shellcheck; do mk_marker "$c"; done
+  for c in jq gh pi shellcheck mu; do mk_marker "$c"; done
   STUB_TH_BAD_SHA=$(printf '%064d' 0)
   export STUB_TH_BAD_SHA
   run_installer
@@ -516,7 +579,7 @@ t_sup_treehouse_checksum_mismatch_rejected() {
 t_sup_treehouse_wget_fallback() {
   sandbox
   local c
-  for c in jq gh pi shellcheck; do mk_marker "$c"; done
+  for c in jq gh pi shellcheck mu; do mk_marker "$c"; done
   rm -f "$SB/bin/curl"
   write_wget_stub
   run_installer
@@ -574,6 +637,7 @@ run "[REQ-7]  pi instructions without Node/npm"              t_req7_pi_instructi
 run "[REQ-8]  shellcheck via the shared pinned install"      t_req8_shellcheck_via_shared_hook
 run "[REQ-9]  summary + idempotent second run"               t_req9_summary_and_idempotent_rerun
 run "[REQ-10] exit status reflects final state"              t_req10_exit_status
+run "[REQ-11] mu launcher linked onto PATH"                  t_req11_mu_launcher_on_path
 run "[supp]   pm failure reported, other categories run"     t_sup_pm_failure_reports_and_continues
 run "[supp]   treehouse checksum mismatch rejected"          t_sup_treehouse_checksum_mismatch_rejected
 run "[supp]   wget fallback when curl is absent"             t_sup_treehouse_wget_fallback
