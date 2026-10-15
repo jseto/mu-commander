@@ -56,6 +56,13 @@ a personal convenience launcher, and thanks to [REQ-8] the `pi-main` session
 it creates is always rooted at the main checkout — never at an ephemeral
 treehouse worktree.
 
+`./install.sh` now creates this link automatically when it is missing
+(`specs/install-script`, [REQ-11] there), with the same main-checkout
+preference (resolved through the git common dir, falling back to the
+checkout running the installer). The command above remains the manual
+fallback and never conflicts: the installer does not overwrite an existing
+`~/.local/bin/mu` entry.
+
 ## Relation to scripts/start-main.sh (coexists, untouched)
 
 `start-main.sh` is the orchestrator's authoritative launcher: it roots the

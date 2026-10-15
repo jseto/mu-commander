@@ -97,7 +97,7 @@ install_sandbox() {
   mk_skill "$SB/req-skills" alpha install-v1
   local c
   for c in bash tmux jq gh realpath date readlink sha256sum tar mktemp \
-           sed grep awk treehouse pi shellcheck; do
+           sed grep awk treehouse pi shellcheck mu; do
     printf '#!/bin/sh\nexit 0\n' > "$SB/bin/$c"
     chmod +x "$SB/bin/$c"
   done

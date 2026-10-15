@@ -13,7 +13,11 @@
 #   - pi through the npm command pi's own README documents;
 #   - shellcheck by delegating to scripts/worktree-setup.sh, the single
 #     pinned source of truth for that dependency — this script deliberately
-#     declares no shellcheck version or checksum of its own.
+#     declares no shellcheck version or checksum of its own;
+#   - the repository's own `mu` launcher (README.md, Installation -> 4.
+#     Put the `mu` launcher on PATH) as the symlink ~/.local/bin/mu ->
+#     the checkout's mu file (main checkout preferred — pooled worktrees
+#     are ephemeral) — nothing is downloaded for it.
 #
 # Besides dependencies, every run also mirrors the required skills
 # (required-skills/ -> .agents/skills/ through scripts/sync-skills.sh) and
@@ -58,8 +62,9 @@ usage() {
     "usage: ./install.sh [-h|--help]" \
     "" \
     "Installs the missing mu-commander dependencies (README.md, Installation" \
-    "-> 2. Dependencies). Safe to re-run; never overwrites an existing tool;" \
-    "exits 0 only when every dependency is present."
+    "-> 2. Dependencies) and links the mu launcher onto PATH (-> 4). Safe to" \
+    "re-run; never overwrites an existing tool; exits 0 only when every" \
+    "dependency is present."
 }
 
 case ${1:-} in
@@ -75,8 +80,9 @@ esac
 # rest map to package names through pkg_for.
 SYSTEM_TOOLS="bash git tmux jq gh realpath date readlink sha256sum tar mktemp sed grep awk"
 # Tools that are not in distro repos (or are provisioned by the repo):
-# dedicated install paths below.
-CUSTOM_TOOLS="treehouse pi shellcheck"
+# dedicated install paths below. `mu` is this repository's own launcher —
+# its "install" is the PATH symlink of README.md, Installation -> 4.
+CUSTOM_TOOLS="treehouse pi shellcheck mu"
 ALL_TOOLS="$SYSTEM_TOOLS $CUSTOM_TOOLS"
 
 # need-style detection, collect-mode: true when the command resolves on PATH.
@@ -384,6 +390,45 @@ install_shellcheck() {
   return 0
 }
 
+# --- mu launcher ------------------------------------------------------------
+
+# Put the repository's own `mu` launcher on PATH (README.md, Installation ->
+# 4): ~/.local/bin/mu -> <checkout>/mu. Nothing is downloaded; the link
+# prefers the main checkout (resolved through git's common dir) because
+# pooled worktrees are ephemeral — specs/mu-launcher, "PATH installation".
+# The no-overwrite rule covers any existing entry (file or symlink, even a
+# broken one), and the outcome is re-checked with `command -v` like every
+# other tool.
+install_mu() {
+  case " $PRESENT " in *" mu "*) return 0 ;; esac
+  local target="$HOME/.local/bin/mu" launcher="$REPO_ROOT/mu" common main_root
+  if have git \
+     && common=$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null) \
+     && [ -n "$common" ] \
+     && main_root=$(cd -- "$REPO_ROOT" 2>/dev/null && cd -- "$common" 2>/dev/null && pwd); then
+    main_root=${main_root%/*}   # strip the trailing ".git" component
+    [ -f "$main_root/mu" ] && launcher="$main_root/mu"
+  fi
+  if [ ! -f "$launcher" ]; then
+    manual_add "mu" "the launcher file $launcher is missing — restore it (git checkout -- mu) and re-run"
+    return 0
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    manual_add "mu" "$target exists but mu does not resolve on PATH — add ~/.local/bin to your PATH, or point the entry at $launcher (the existing file is left untouched)"
+    return 0
+  fi
+  if ! mkdir -p "$(dirname "$target")" || ! ln -s "$launcher" "$target"; then
+    manual_add "mu" "could not create $target — link it by hand: ln -sf $launcher $target"
+    return 0
+  fi
+  if have mu; then
+    installed_add "mu"
+  else
+    manual_add "mu" "installed at $target but mu is not on PATH — add ~/.local/bin to your PATH"
+  fi
+  return 0
+}
+
 # --- required skills + git hooks (advisory, every run) -----------------------
 
 # Mirror required-skills/ into .agents/skills/ (pi's project skill location).
@@ -478,6 +523,7 @@ main() {
   install_treehouse
   install_pi
   install_shellcheck
+  install_mu            # repo-owned launcher (README -> 4), not a download
   activate_githooks   # after the installs: git may only have arrived now
   summarize
   if [ "$MANUAL_N" -eq 0 ]; then
