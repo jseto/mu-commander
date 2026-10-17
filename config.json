@@ -2,21 +2,21 @@
   "taskLevels": {
     "default": "standard",
     "fallbackModel": "opencode-go/deepseek-v4.1-flash",
-    "fallbackThinking": "low",
+    "fallbackThinking": "high",
     "levels": {
       "easy": {
         "description": "Chores, trims, config and docs edits, small fixes.",
         "model": "opencode-zen-free/mimo-v2.6-flash-free",
-        "thinking": "xhigh"
+        "thinking": "high"
       },
       "standard": {
         "description": "Features and bug fixes with the full specs flow.",
-        "model": "opencode-zen-free/mimo-v2.6-flash-free",
-        "thinking": "xhigh"
+        "model": "opencode-zen-free/space-bunny-free",
+        "thinking": "max"
       },
       "hard": {
         "description": "Architecture, root-cause analysis, long-haul work.",
-        "model": "opencode-go/deepseek-v4.1-flash",
+        "model": "opencode-go/gpt-6-luna",
         "thinking": "max"
       }
     }
