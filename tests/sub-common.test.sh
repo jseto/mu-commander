@@ -2,7 +2,8 @@
 # Behavioural tests for scripts/_sub-common.sh — prepare_child_agent_dir
 # (specs/child-model-defaults/child-model-defaults.feature) and the region
 # parser + verified send of tmux_send_line (specs/fix-send-confirm/
-# fix-send-confirm.feature, labels prefixed [fix-send-confirm]).
+# fix-send-confirm.feature and specs/fix-parked-prompt/fix-parked-prompt.feature,
+# labels prefixed [fix-send-confirm] / [fix-parked-prompt]).
 #
 # The prepare tests source the script under test in a subshell with an
 # isolated $HOME (fixture written into $HOME/.pi/agent/settings.json) and
@@ -213,6 +214,39 @@ stats"
   [ "$PF_LAYOUT" = 0 ] || fail "shell pane must be unrecognized, got layout=$PF_LAYOUT"
 }
 
+# [fix-parked-prompt REQ-1] the composer's block survives a blank line above
+# the status border (the shape that pushed a parked line into the transcript).
+t_send_req1_composer_survives_blank_gap_above_border() {
+  parse_fixture "fold line
+
+── ⠴ Working ──────────
+my parked instruction
+
+$D68
+/tmp/wt (task/demo)
+stats"
+  [ "$PF_LAYOUT" = 1 ] || fail "gap pane not recognized (layout=$PF_LAYOUT)"
+  [[ $PF_COMP == *myparkedinstruct* ]] || fail "parked text lost from the composer: $PF_COMP"
+  [[ $PF_TRANS != *myparkedinstruct* ]] || fail "parked text leaked into transcript: $PF_TRANS"
+}
+
+# [fix-parked-prompt REQ-4] the composer region is bounded: a transcript that
+# runs into the status border without a blank separator is not swallowed.
+t_send_req4_composer_region_is_bounded() {
+  parse_fixture "oldest line one
+older line two
+old line three
+recent line four
+freshest line
+$D68
+/tmp/wt (task/demo)
+stats"
+  [ "$PF_LAYOUT" = 1 ] || fail "pane not recognized (layout=$PF_LAYOUT)"
+  [[ $PF_COMP == *freshestline* ]] || fail "the line above the border is not the composer: $PF_COMP"
+  [[ $PF_TRANS == *oldestlineone* ]] || fail "older history must stay transcript: $PF_TRANS"
+  [[ $PF_COMP != *oldestlineone* ]] || fail "the composer swallowed unbounded history: $PF_COMP"
+}
+
 # Fake-tmux sandbox: a structured pi-TUI pane (transcript / spinner /
 # composer / status border / path / stats) whose behaviour is driven by
 # FAKE_TMUX_MODE — see the fake's header for the modes.
@@ -234,7 +268,16 @@ setup_send() {
 #               (TUI reset); later Enters submit normally
 #   vanish-all  every Enter wipes the composer; nothing ever reaches the
 #               transcript
-# FAKE_TMUX_LAYOUT=shell renders an interactive shell pane (no pi layout).
+#   already-sent the literal text is rendered into the transcript instead of
+#               the composer and Enter is a no-op: the pane state that is
+#               indistinguishable from a parked prompt once the region
+#               boundaries blur (specs/fix-parked-prompt)
+# FAKE_TMUX_LAYOUT selects the pane shape (pi default):
+#   shell  an interactive shell pane (no pi layout)
+#   live   transcript / blank / "── ⠴ Working ──" / blank / composer / border
+#   gap    the same pane in the instant after typing, before pi has drawn the
+#          composer's top border: a blank line sits between the composer and
+#          the status border (the pi-riak-250-review incident)
 set -u
 S=${FAKE_TMUX_DIR:?FAKE_TMUX_DIR not set}
 mkdir -p "$S"
@@ -243,6 +286,7 @@ mkdir -p "$S"
 [ -f "$S/composer" ] || : > "$S/composer"
 [ -f "$S/tick" ] || : > "$S/tick"
 D='────────────────────────────────────────────────────────────────────'
+W='── ⠴ Working ───────────────────────────────────────────────────'
 case "${1:-}" in
   send-keys)
     shift
@@ -253,7 +297,11 @@ case "${1:-}" in
     done
     mode=${FAKE_TMUX_MODE:-ok}
     if [ "$literal" = 1 ]; then
-      [ "$mode" = drop-text ] || printf '%s' "$text" >> "$S/composer"
+      case "$mode" in
+        drop-text) : ;;
+        already-sent) printf '%s\n' "$text" >> "$S/transcript" ;;
+        *) printf '%s' "$text" >> "$S/composer" ;;
+      esac
       exit 0
     fi
     case "$mode" in
@@ -263,7 +311,7 @@ case "${1:-}" in
           printf '\n' >> "$S/transcript"
           : > "$S/composer"
         fi ;;
-      drop-text|drop-enter) : ;;
+      drop-text|drop-enter|already-sent) ;;
       redraw)
         n=$(cat "$S/tick")
         printf '#%s' "$(( ${n:-0} + 1 ))" > "$S/tick" ;;
@@ -286,8 +334,17 @@ case "${1:-}" in
       exit 0
     fi
     if [ -s "$S/transcript" ]; then cat "$S/transcript"; fi
-    printf '\n%s\n' "$D"          # gap + spinner row
-    if [ -s "$S/composer" ]; then cat "$S/composer"; printf '\n'; else printf '\n'; fi
+    case "${FAKE_TMUX_LAYOUT:-pi}" in
+      live)   # working row, blank, composer — the composer sits directly
+              # above the status border
+        printf '\n%s\n\n%s\n' "$W" "$(cat "$S/composer")" ;;
+      gap)    # …the same pane before pi drew the composer's top border: the
+              # blank line between composer and border
+        printf '\n%s\n%s\n\n' "$W" "$(cat "$S/composer")" ;;
+      *)
+        printf '\n%s\n' "$D"          # gap + spinner row
+        if [ -s "$S/composer" ]; then cat "$S/composer"; printf '\n'; else printf '\n'; fi ;;
+    esac
     printf '%s\n' "$D"            # status border
     printf '%s\n' '/test/worktree (task/demo)'
     printf 'stats line %s\n' "$(cat "$S/tick")"
@@ -313,6 +370,70 @@ run_send() { # <text> [mode] [layout] [attempts] [settle]
 
 sent_literals() { grep -c -- ' -l ' "$FAKE_TMUX_DIR/log"; }
 sent_enters()   { grep -c -- ' Enter$' "$FAKE_TMUX_DIR/log"; }
+
+# [fix-parked-prompt REQ-1] the incident: the composer sits one row above the
+# border because pi had not drawn the composer's top border yet. Enter must be
+# sent and the send confirmed from evidence — the old region model filed the
+# line under the transcript and gave up before pressing anything.
+t_send_req1_gap_above_border_still_submits() {
+  setup_send
+  run_send "instruction parked above a blank gap" ok gap 3 0
+  [ "$SEND_RC" -eq 0 ] || fail "expected success, got $SEND_RC: $SEND_ERR"
+  [ "$(sent_enters)" -ge 1 ] || fail "no Enter was sent: $(cat "$FAKE_TMUX_DIR/log")"
+  grep -Fq "instruction parked above a blank gap" "$FAKE_TMUX_DIR/transcript" \
+    || fail "transcript never received the line"
+  [ ! -s "$FAKE_TMUX_DIR/composer" ] || fail "composer must be empty after submit"
+}
+
+# [fix-parked-prompt REQ-1] the exact live shape: working row, blank line,
+# composer directly above the status border.
+t_send_req1_live_shape_submits() {
+  setup_send
+  run_send "instruction under a working row" ok live 3 0
+  [ "$SEND_RC" -eq 0 ] || fail "expected success, got $SEND_RC: $SEND_ERR"
+  [ "$(sent_enters)" -ge 1 ] || fail "no Enter was sent: $(cat "$FAKE_TMUX_DIR/log")"
+  grep -Fq "instruction under a working row" "$FAKE_TMUX_DIR/transcript" \
+    || fail "transcript never received the line"
+}
+
+# [fix-parked-prompt REQ-2, REQ-3] visible text that cannot be placed in the
+# composer is UNKNOWN, not sent: Enter is still sent, the send is confirmed
+# from evidence, and an already-submitted line is not submitted twice.
+t_send_req2_unproven_text_is_entered_then_confirmed() {
+  setup_send
+  run_send "already submitted, unknown placement" already-sent pi 3 0
+  [ "$SEND_RC" -eq 0 ] || fail "an unproven placement must not fail the send: $SEND_ERR"
+  [ "$(sent_enters)" -ge 1 ] || fail "gave up before pressing Enter: $(cat "$FAKE_TMUX_DIR/log")"
+  [ "$(grep -Fc -- 'already submitted, unknown placement' "$FAKE_TMUX_DIR/transcript")" -eq 1 ] \
+    || fail "the line must not be submitted twice: $(cat "$FAKE_TMUX_DIR/transcript")"
+  [ ! -s "$FAKE_TMUX_DIR/composer" ] || fail "nothing may be left parked"
+}
+
+# [fix-parked-prompt REQ-5] a line that stays visible but unproven is never
+# re-typed; Enter is retried until the bound is exhausted.
+t_send_req5_no_retype_on_ambiguous_capture() {
+  setup_send
+  run_send "never retype an ambiguous line" drop-enter gap 2 0
+  [ "$SEND_RC" -ne 0 ] || fail "expected failure when the pane never submits"
+  [ "$(sent_literals)" -eq 1 ] || fail "re-typed on an ambiguous capture: $(cat "$FAKE_TMUX_DIR/log")"
+  [ "$(sent_enters)" -ge 2 ] || fail "Enter not retried: $(cat "$FAKE_TMUX_DIR/log")"
+}
+
+# [fix-parked-prompt REQ-6] the final failure names exactly what was attempted.
+t_send_req6_failure_names_what_was_attempted() {
+  setup_send
+  run_send "instruction that never submits" drop-enter pi 3 0
+  [ "$SEND_RC" -ne 0 ] || fail "expected failure for a pane that never submits"
+  case $SEND_ERR in
+    *"typed it 1 time(s)"*) ;; *) fail "stderr must name the typing count: $SEND_ERR" ;;
+  esac
+  case $SEND_ERR in
+    *"Enter 3 time(s)"*) ;; *) fail "stderr must name the Enter count: $SEND_ERR" ;;
+  esac
+  case $SEND_ERR in
+    *parked*) ;; *) fail "stderr must say the prompt may be parked: $SEND_ERR" ;;
+  esac
+}
 
 # [REQ-1] success only from positive evidence: line left the composer and
 # appears in the transcript.
@@ -430,8 +551,15 @@ run "[fix-send-confirm REQ-3] retype a vanished prompt"                t_send_re
 run "[fix-send-confirm REQ-5] second vanish fails loudly"              t_send_req5_second_vanish_fails_loudly
 run "[fix-send-confirm REQ-4] never-appearing text fails w/o Enter"    t_send_req4_text_never_appears_fails_without_enter_success
 run "[fix-send-confirm REQ-5] frozen pane fails after bounds"          t_send_req5_frozen_pane_fails_after_bounds
-run "[fix-send-confirm REQ-6] shell pane keeps the change check"       t_send_req6_shell_pane_keeps_change_check
-run "[fix-send-confirm REQ-10] helper + suite shellcheck-clean"        t_send_req10_shellcheck_clean
+run "[fix-send-confirm REQ-6 / fix-parked-prompt REQ-7] shell pane keeps the change check" t_send_req6_shell_pane_keeps_change_check
+run "[fix-parked-prompt REQ-1] composer survives a blank gap above the border" t_send_req1_composer_survives_blank_gap_above_border
+run "[fix-parked-prompt REQ-4] composer region is bounded"                t_send_req4_composer_region_is_bounded
+run "[fix-parked-prompt REQ-1] gap above the border still submits"         t_send_req1_gap_above_border_still_submits
+run "[fix-parked-prompt REQ-1] live shape submits"                         t_send_req1_live_shape_submits
+run "[fix-parked-prompt REQ-2/3] unproven text is entered, then confirmed"  t_send_req2_unproven_text_is_entered_then_confirmed
+run "[fix-parked-prompt REQ-5] no retype on an ambiguous capture"          t_send_req5_no_retype_on_ambiguous_capture
+run "[fix-parked-prompt REQ-6] failure names what was attempted"           t_send_req6_failure_names_what_was_attempted
+run "[fix-send-confirm REQ-10 / fix-parked-prompt REQ-8] shellcheck-clean"  t_send_req10_shellcheck_clean
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"
