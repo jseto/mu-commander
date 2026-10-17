@@ -531,7 +531,18 @@ process therefore starts with the worktree as its current directory, not the
 main checkout. The kickoff is passed to pi as its **initial message
 argument** (`pi -n <task> --no-extensions -e npm:pi-subagents "<kickoff>"`), not typed into the composer, so a
 keystroke lost while pi initializes can never leave the child sitting idle
-with an unsent prompt. (The raw commands behind it: `treehouse get
+with an unsent prompt.
+
+> **Children always load `pi-subagents`** (user directive, 2026-10-08: "let
+> children to load pi-subagents extension. remember that for the future."):
+> every spawned child gets `-e npm:pi-subagents` on its launch line — never a
+> matter of preference at spawn time. Do not export or pass
+> `SUB_CHILD_SUBAGENTS=0`, do not hand-roll a `pi` launch line that omits
+> `-e`, and do not read the isolated agent directory as a reason to strip it:
+> `-e` on the launch line is exactly how a child gets the package while every
+> other extension and package stays out. A spawn warning that `pi-subagents`
+> is missing under `$HOME/.pi/agent/npm` gets the package installed, not an
+> opt-out. (The raw commands behind it: `treehouse get
 --lease --lease-holder <task>`, fetch `origin/$DEV_BRANCH`, resolve the base
 ref (`origin/$DEV_BRANCH` → local `$DEV_BRANCH` → `origin/HEAD`), create
 `task/<task>` from the resolved ref, `tmux new -d -c <worktree>`, then
