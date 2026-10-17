@@ -337,6 +337,19 @@ _flatten() { printf '%s' "$1" | tr -d '[:space:]'; }
 # Flattened text currently shown in a pane.
 _pane_flattened() { tmux capture-pane -t "$1" -p 2>/dev/null | tr -d '[:space:]' || true; }
 
+# True when the probe is visible anywhere in the pane, polling a bounded
+# number of times: `send-keys` only hands the bytes to the pane's input queue,
+# and a TUI mid-redraw (slow extension init, model switch, compaction) can hold
+# them there long after the call returned.
+_pi_visible() { # $1=target $2=probe
+  local n
+  for (( n = 0; n < _PI_VISIBILITY_TRIES; n++ )); do
+    if _pane_flattened "$1" | grep -qF -- "$2"; then return 0; fi
+    sleep "$_PI_TYPE_SETTLE"
+  done
+  return 1
+}
+
 # Bounded composer window. pi's composer is a short block (the typed line plus
 # at most its wrapped tail) directly above the status border, and the probe
 # callers use is the TAIL of the line, so the bottom window is all the
@@ -345,23 +358,52 @@ _pane_flattened() { tmux capture-pane -t "$1" -p 2>/dev/null | tr -d '[:space:]'
 # unbounded walk-up of the previous implementation reported an idle pane's
 # whole scrollback as parked text.
 _PI_COMP_MAX_LINES=4
-# How far above the status border pi's missing composer top border may push the
-# composer block: a blank line (the composer's own top border is not drawn yet
-# in the instant after typing — reproduced on pi-riak-250-review, where the
-# parked line then landed in the transcript and the send was abandoned before
-# any Enter).
-_PI_COMP_GAP_LINES=2
+# How many rows above the status border are scanned for the composer's bottom
+# edge — i.e. how many blank rows are tolerated there (at most
+# _PI_COMP_SCAN_LINES-1 of them): pi leaves one for the empty composer, and
+# the composer's own top border is not drawn at all in the instant after
+# typing (reproduced on pi-riak-250-review, where the parked line then landed
+# in the transcript and the send was abandoned before any Enter).
+_PI_COMP_SCAN_LINES=2
+# Bounded budget for "did the typed text render at all": `send-keys` hands the
+# bytes to the pane's input queue, and a TUI mid-redraw can hold them there for
+# a while, so visibility is polled instead of probed once per attempt.
+_PI_TYPE_ATTEMPTS=2
+_PI_VISIBILITY_TRIES=3
+_PI_TYPE_SETTLE=0.4
+# One quick re-capture before a vanished line is re-typed: a merely LATE
+# transcript render must not lead to a duplicate line.
+_PI_VANISH_RECHECK=0.2
 
-# True when a pane line is pi's chrome rather than composer content: a
-# box-drawing row delimited by dashes at both ends — the status border itself,
-# the working/spinner row ("── ⠴ Working ──") and its idle siblings. Chrome
-# bounds the composer block but is never part of it, which keeps an idle or
-# working pane's composer region empty.
+# Region globals, so a predicate can never read an unset variable (callers run
+# with set -u) before a parse filled them in.
+_pi_layout='' _pi_comp='' _pi_trans='' _pi_below='' _pi_all=''
+
+# True when a pane line is nothing but box-drawing dashes — pi's status
+# border. Byte-exact dash stripping keeps this locale-independent (the system
+# awk is mawk, whose multibyte regexes would misfire — hence pure bash + tr).
+_pi_dash_row() { # $1=pane line
+  local s=${1//[[:space:]]/}
+  [ -n "$s" ] && [ -z "${s//─/}" ]
+}
+
+# True when a pane line is pi's chrome rather than composer content: the
+# status border, or the bordered spinner/status row above the composer
+# ("── ⠴ Working ──", pi's Loader frames and its message). Chrome bounds the
+# composer block but is never part of it, which keeps an idle or working pane's
+# composer region empty. The rule is deliberately narrow — a started-and-ended
+# dashed row is not chrome — because classifying a parked line as chrome would
+# push it into the transcript and turn a still-parked prompt into a confirmed
+# send. A wording change in pi's status row only means chrome is no longer
+# recognised, which is harmless: the row then reads as ordinary content and
+# never holds the probe.
 _pi_chrome_row() { # $1=pane line
-  case ${1//[[:space:]]/} in
-    ─*─) return 0 ;;
-    *) return 1 ;;
+  local s=${1//[[:space:]]/}
+  if _pi_dash_row "$1"; then return 0; fi
+  case $s in
+    ─*⠋*|─*⠙*|─*⠹*|─*⠸*|─*⠼*|─*⠴*|─*⠦*|─*⠧*|─*⠇*|─*⠏*) return 0 ;;
   esac
+  return 1
 }
 
 # Split one capture of a pi TUI pane into its regions. Reads the capture on
@@ -375,7 +417,7 @@ _pi_chrome_row() { # $1=pane line
 #   _pi_comp    flattened composer region: the run of non-blank, non-chrome
 #               lines directly above that border, bounded to
 #               _PI_COMP_MAX_LINES. Its bottom edge is the lowest non-blank
-#               line within _PI_COMP_GAP_LINES above the border, so a not yet
+#               line within _PI_COMP_SCAN_LINES above the border, so a not yet
 #               drawn composer top border (a blank line between text and
 #               border) no longer collapses the region — which used to push a
 #               parked line into the transcript. Empty when the composer is
@@ -407,20 +449,18 @@ _pi_parse_regions() {
   # whose multibyte regexes would misfire — hence pure bash + tr here).
   if (( last > 0 )); then
     for (( i = last - 1; i >= 0 && i >= last - 6; i-- )); do
-      s=${L[i]//[[:space:]]/}
-      [ -n "$s" ] || continue
-      if [ -z "${s//─/}" ]; then b=$i; break; fi
+      if _pi_dash_row "${L[i]}"; then b=$i; break; fi
     done
   fi
   [ "$b" -ge 0 ] || return 0
   _pi_layout=1
-  # Composer bottom edge: the lowest non-blank line within _PI_COMP_GAP_LINES
+  # Composer bottom edge: the lowest non-blank line within _PI_COMP_SCAN_LINES
   # above the border (skipping the blank row pi leaves for an empty composer
   # and, transiently, the missing composer top border). Chrome (the working
   # row) there means the composer is empty.
   top=$b
   j=-1
-  for (( i = b - 1; i >= 0 && i > b - 1 - _PI_COMP_GAP_LINES; i-- )); do
+  for (( i = b - 1; i >= 0 && i > b - 1 - _PI_COMP_SCAN_LINES; i-- )); do
     [ -n "${L[i]//[[:space:]]/}" ] || continue
     j=$i
     break
@@ -473,10 +513,26 @@ _pi_composer_holds() { # $1=probe
 # completion mutations never satisfy this. It is the ONLY success condition
 # on a pi pane — an empty Enter against an already-submitted line leaves the
 # evidence in place, so the check is safe to evaluate from any capture.
+#
+# It relies on one property of pi's renderer: the user turn is echoed into the
+# transcript verbatim (at least its tail — which is all the probe matches). A
+# renderer that folds or truncates the turn would turn a submitted line into
+# "vanished" and re-type it.
 _pi_submission_evidence() { # $1=probe
   [ "$_pi_layout" = 1 ] \
     && grep -qF -- "$1" <<<"$_pi_trans" \
     && ! grep -qF -- "$1" <<<"$_pi_comp"
+}
+
+# True when the capture shows pi's box-drawing chrome but no resolvable status
+# border — an incomplete frame of a pi TUI, not a shell. Confirming such a pane
+# from "the pane changed" is the 2026-10-02 false success waiting to happen, so
+# it is treated as a pi pane (evidence only). The shell-launch panes of
+# start-main.sh / sub-spawn.sh are brand-new tmux sessions whose only output is
+# the prompt, so this never fires there; where it does misfire the cost is a
+# loud failure, never a silent "sent".
+_pi_unresolved_pi_pane() { # $1=flattened capture
+  [ "$_pi_layout" = 0 ] && grep -q -- '─' <<<"$1"
 }
 
 # Type a line into a tmux pane and make sure it actually runs.
@@ -504,12 +560,13 @@ _pi_submission_evidence() { # $1=probe
 # scripts treat it as fatal so a stranded line can never be reported as
 # delivered.
 #
-# NEVER STRAND A PROMPT: as long as the text is visible in the pane, the helper
-# presses Enter before it can give up. A region boundary is fuzzy (pi redraws
-# between the typing and the capture), so visible-but-unplaced text is
-# UNKNOWN, never "sent" — abandoning it is what left an instruction parked in
-# pi-riak-250-review's composer on 2026-10-17. An Enter against an
-# already-submitted line is harmless; a prompt nobody submits is not.
+# NEVER STRAND A PROMPT: as long as the text is visible in the pane — or its
+# bytes may still be rendering there — the helper presses Enter before it can
+# give up. A region boundary is fuzzy (pi redraws between the typing and the
+# capture), so visible-but-unplaced text is UNKNOWN, never "sent" — abandoning
+# it is what left an instruction parked in pi-riak-250-review's composer on
+# 2026-10-17. An Enter against an already-submitted line is harmless; a prompt
+# nobody submits is not.
 tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
   local target=$1 text=$2 attempts=${3:-4} settle=${4:-1}
   local probe before after i strict=0 retyped=0 typed=0 entered=0
@@ -525,18 +582,23 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
     return 1
   fi
   if _pane_flattened "$target" | grep -qF -- "$probe"; then
-    warn "the text was already visible in $target before typing it — a later confirmation cannot tell this send apart from that copy"
+    warn "the text was already visible in $target before typing — the confirmation below may be satisfied by that copy rather than by this send"
   fi
-  # 1) Type the line until it is visible somewhere in the pane.
-  for (( i = 0; i < 2; i++ )); do
+  # 1) Type the line until it renders somewhere in the pane.
+  for (( i = 0; i < _PI_TYPE_ATTEMPTS; i++ )); do
     tmux send-keys -t "$target" -l "$text"
     typed=$((typed + 1))
-    sleep 0.4
-    if _pane_flattened "$target" | grep -qF -- "$probe"; then break; fi
+    if _pi_visible "$target" "$probe"; then break; fi
     warn "text not visible in $target yet; retyping"
   done
-  if ! _pane_flattened "$target" | grep -qF -- "$probe"; then
-    warn "the text never appeared in $target — not claiming it was sent"
+  if ! _pi_visible "$target" "$probe"; then
+    # The bytes are already in the pane's input queue, so the composer may
+    # render this line a frame later: press Enter rather than abandon it. This
+    # is the last-resort Enter of the never-strand rule — the helper still
+    # fails, because nothing here is evidence that the line was submitted.
+    tmux send-keys -t "$target" Enter
+    entered=1
+    warn "the text never rendered in $target after typing it ${typed} time(s) — Enter sent anyway in case it renders late; check the pane"
     return 1
   fi
   # 2) Decide from where the text landed what may confirm the send. On a pi
@@ -549,6 +611,8 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
   _pi_regions_of "$target"
   if [ "$_pi_layout" = 1 ] && ! grep -qF -- "$probe" <<<"$_pi_below"; then
     strict=1
+  elif _pi_unresolved_pi_pane "$_pi_all"; then
+    strict=1
   fi
   before=$_pi_all   # baseline from the decision capture (same pane, no re-capture)
   for (( i = 0; i < attempts; i++ )); do
@@ -556,9 +620,14 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
     entered=$((entered + 1))
     sleep "$settle"
     _pi_regions_of "$target"
-    # Escalate the moment the line is seen inside a pi composer — even a send
-    # that started out generic must never be confirmed while parked.
-    if _pi_composer_holds "$probe"; then
+    # Escalate the moment a capture places the line inside pi's TUI — even a
+    # send that started out generic must never be confirmed generically while
+    # the line may be parked in a composer (this also recovers a pane whose
+    # first capture was an incomplete frame: one later capture that resolves
+    # the layout latches strict mode for the rest of the send).
+    if [ "$_pi_layout" = 1 ] && ! grep -qF -- "$probe" <<<"$_pi_below"; then
+      strict=1
+    elif _pi_unresolved_pi_pane "$_pi_all"; then
       strict=1
     fi
     if [ "$strict" = 1 ]; then
@@ -573,7 +642,7 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
         # quick re-capture first: a merely LATE transcript render must not
         # lead to a duplicate line.
         if ! grep -qF -- "$probe" <<<"$_pi_all"; then
-          sleep 0.2
+          sleep "$_PI_VANISH_RECHECK"
           _pi_regions_of "$target"
           if _pi_submission_evidence "$probe"; then
             return 0 # the transcript render was only slow — submitted
@@ -588,7 +657,8 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
           retyped=1
           warn "the prompt vanished from $target without reaching the transcript; retyping"
           tmux send-keys -t "$target" -l "$text"
-          sleep 0.4
+          typed=$((typed + 1))
+          sleep "$_PI_TYPE_SETTLE"
         fi
       fi
       continue # still parked (or no evidence yet): retry Enter

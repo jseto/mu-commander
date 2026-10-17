@@ -247,6 +247,23 @@ stats"
   [[ $PF_COMP != *oldestlineone* ]] || fail "the composer swallowed unbounded history: $PF_COMP"
 }
 
+# [fix-parked-prompt REQ-4] only pi's own chrome is chrome: a parked line that
+# happens to be delimited by box-drawing dashes is still composer content, or
+# it would be pushed into the transcript and a parked prompt confirmed as sent.
+t_send_req4_dashed_parked_line_stays_in_the_composer() {
+  parse_fixture "fold line
+
+── ⠴ Working ──────────
+── boxed instruction ──
+
+$D68
+/tmp/wt (task/demo)
+stats"
+  [ "$PF_LAYOUT" = 1 ] || fail "pane not recognized (layout=$PF_LAYOUT)"
+  [[ $PF_COMP == *boxedinstruction* ]] || fail "dashed parked line lost from the composer: $PF_COMP"
+  [[ $PF_TRANS != *boxedinstruction* ]] || fail "dashed parked line leaked into transcript: $PF_TRANS"
+}
+
 # Fake-tmux sandbox: a structured pi-TUI pane (transcript / spinner /
 # composer / status border / path / stats) whose behaviour is driven by
 # FAKE_TMUX_MODE — see the fake's header for the modes.
@@ -278,6 +295,8 @@ setup_send() {
 #   gap    the same pane in the instant after typing, before pi has drawn the
 #          composer's top border: a blank line sits between the composer and
 #          the status border (the pi-riak-250-review incident)
+#   partial a pi pane caught mid-repaint: chrome and composer, but no
+#          resolvable status border (layout unrecognized)
 set -u
 S=${FAKE_TMUX_DIR:?FAKE_TMUX_DIR not set}
 mkdir -p "$S"
@@ -341,6 +360,11 @@ case "${1:-}" in
       gap)    # …the same pane before pi drew the composer's top border: the
               # blank line between composer and border
         printf '\n%s\n%s\n\n' "$W" "$(cat "$S/composer")" ;;
+      partial) # a half-drawn frame: no status border row to anchor the regions
+        printf '\n%s\n%s\n' "$W" "$(cat "$S/composer")"
+        printf '%s\n' '/test/worktree (task/demo)'
+        printf 'stats line %s\n' "$(cat "$S/tick")"
+        exit 0 ;;
       *)
         printf '\n%s\n' "$D"          # gap + spinner row
         if [ -s "$S/composer" ]; then cat "$S/composer"; printf '\n'; else printf '\n'; fi ;;
@@ -483,16 +507,36 @@ t_send_req5_second_vanish_fails_loudly() {
 }
 
 # [REQ-4] text that never appears: retype, then fail before any Enter-based
-# success is possible.
+# success is possible (fix-parked-prompt REQ-9 adds the last-resort Enter).
 t_send_req4_text_never_appears_fails_without_enter_success() {
   setup_send
   run_send "text that never lands" drop-text
   [ "$SEND_RC" -ne 0 ] || fail "expected failure for text that never appeared"
   [ "$(sent_literals)" -ge 2 ] || fail "expected a retype (>= 2 sends)"
-  [ "$(sent_enters)" -eq 0 ] || fail "no Enter may drive a success claim"
   case $SEND_ERR in
-    *"never appeared"*) ;; *) fail "stderr should say the text never appeared: $SEND_ERR" ;;
+    *"never rendered"*) ;; *) fail "stderr should say the text never rendered: $SEND_ERR" ;;
   esac
+}
+
+# [fix-parked-prompt REQ-9] the bytes are in the pane's input queue even when
+# nothing rendered: Enter is sent anyway, and the helper still fails.
+t_send_req9_enter_sent_before_giving_up_on_unrendered_text() {
+  setup_send
+  run_send "text that never lands" drop-text
+  [ "$SEND_RC" -ne 0 ] || fail "an unrendered line must never be claimed as sent"
+  [ "$(sent_enters)" -ge 1 ] || fail "no last-resort Enter: $(cat "$FAKE_TMUX_DIR/log")"
+  case $SEND_ERR in
+    *"Enter sent anyway"*) ;; *) fail "stderr should name the last-resort Enter: $SEND_ERR" ;;
+  esac
+}
+
+# [fix-parked-prompt REQ-7] a half-drawn pi pane (chrome, no resolvable status
+# border) must never be confirmed by the legacy "pane changed" check.
+t_send_req7_incompletely_drawn_pi_pane_never_confirmed() {
+  setup_send
+  run_send "pane caught mid-repaint" redraw partial 3 0
+  [ "$SEND_RC" -ne 0 ] || fail "an unresolved pi pane was confirmed by a pane change"
+  [ "$(sent_enters)" -ge 2 ] || fail "Enter not retried: $(cat "$FAKE_TMUX_DIR/log")"
 }
 
 # [REQ-5] frozen pane: bounded Enter retries, then failure.
@@ -550,10 +594,13 @@ run "[fix-send-confirm REQ-2] parked prompt + pane noise never confirmed" t_send
 run "[fix-send-confirm REQ-3] retype a vanished prompt"                t_send_req3_retypes_when_prompt_vanished
 run "[fix-send-confirm REQ-5] second vanish fails loudly"              t_send_req5_second_vanish_fails_loudly
 run "[fix-send-confirm REQ-4] never-appearing text fails w/o Enter"    t_send_req4_text_never_appears_fails_without_enter_success
+run "[fix-parked-prompt REQ-9] last-resort Enter before giving up"     t_send_req9_enter_sent_before_giving_up_on_unrendered_text
+run "[fix-parked-prompt REQ-7] half-drawn pi pane never confirmed"     t_send_req7_incompletely_drawn_pi_pane_never_confirmed
 run "[fix-send-confirm REQ-5] frozen pane fails after bounds"          t_send_req5_frozen_pane_fails_after_bounds
 run "[fix-send-confirm REQ-6 / fix-parked-prompt REQ-7] shell pane keeps the change check" t_send_req6_shell_pane_keeps_change_check
 run "[fix-parked-prompt REQ-1] composer survives a blank gap above the border" t_send_req1_composer_survives_blank_gap_above_border
 run "[fix-parked-prompt REQ-4] composer region is bounded"                t_send_req4_composer_region_is_bounded
+run "[fix-parked-prompt REQ-4] dashed parked line stays in the composer"   t_send_req4_dashed_parked_line_stays_in_the_composer
 run "[fix-parked-prompt REQ-1] gap above the border still submits"         t_send_req1_gap_above_border_still_submits
 run "[fix-parked-prompt REQ-1] live shape submits"                         t_send_req1_live_shape_submits
 run "[fix-parked-prompt REQ-2/3] unproven text is entered, then confirmed"  t_send_req2_unproven_text_is_entered_then_confirmed

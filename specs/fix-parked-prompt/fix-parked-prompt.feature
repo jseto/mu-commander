@@ -70,7 +70,27 @@ Feature: Never strand a prompt in a child's composer (scripts/_sub-common.sh)
     Then the pane content changing after Enter still confirms the send
       And the helper returns success
 
+  Scenario: Never confirm from an incompletely drawn pi pane [REQ-7]
+    Given a tmux pane that shows pi's chrome but whose status border is not
+      resolvable yet, and whose content changes on every Enter
+    When tmux_send_line verifies the send
+    Then the pane change never confirms the send
+      And the helper returns failure
+
+  Scenario: Keep a dashed-looking parked line inside the composer [REQ-4]
+    Given a captured pane in pi's TUI layout whose composer holds a line that
+      happens to be delimited by box-drawing dashes
+    When the capture is split into regions
+    Then that line is reported as the composer
+      And it is not pushed into the transcript
+
   Scenario: Keep the touched shell scripts shellcheck-clean [REQ-8]
     Given shellcheck is available
     When the scripts touched by this change are checked
     Then shellcheck reports no findings
+
+  Scenario: Press Enter before giving up when the typed line never rendered [REQ-9]
+    Given a tmux pane that accepts the typed bytes but never renders them
+    When tmux_send_line exhausts its attempts
+    Then Enter is still sent once, in case the composer renders the line late
+      And the helper fails loudly without claiming the send

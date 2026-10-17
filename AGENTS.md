@@ -573,11 +573,12 @@ evidence: inside pi the send only succeeds once the prompt has **left the
 composer and appears in the transcript** — pane noise, redraws, and
 completion mutations never count. A prompt that is visible but whose region
 the helper cannot place (pi redraws between the typing and the capture) counts
-as **unknown, never as sent**: the helper presses `Enter` anyway and then
-demands the evidence, because an `Enter` against an already-submitted line is
-harmless while a stranded prompt is not; it only gives up — **loudly**, naming
-how often it typed and pressed `Enter` — after bounded retries that never
-showed the evidence. When driving a child with raw
+as **unknown, never as sent**: the helper presses `Enter` anyway — even when
+the line has not rendered yet, because `send-keys` has already queued its
+bytes — and then demands the evidence, because an `Enter` against an
+already-submitted line is harmless while a stranded prompt is not; it only
+gives up — **loudly**, naming how often it typed and pressed `Enter` — after
+bounded retries that never showed the evidence. When driving a child with raw
 `tmux send-keys` (or any other way), apply the same rule yourself: send the
 text first, send a separate `Enter` keystroke, then **verify** it was
 submitted (the pane shows the child working, or `sub-status.sh` shows

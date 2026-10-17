@@ -57,32 +57,37 @@ between the typed text and the status border:
 ## Entities
 
 - **`scripts/_sub-common.sh`** (modified)
-  - `_pi_chrome_row` (new): true for a pane line that is pi's chrome rather
-    than content — an all-dash border or a dashed, labelled status row
-    (`── ⠴ Working ──`, `─ Ready ──`, …). A chrome row is never composer
-    content, so an idle/working pane keeps an **empty** composer region
-    (the existing parser fixtures stay valid).
+  - `_pi_dash_row` / `_pi_chrome_row` (new): pi's chrome rather than composer
+    content — the status border (all dashes) and the bordered spinner row
+    (`── ⠴ Working ──`, pi's Loader frames). Deliberately narrow: a line that
+    merely starts and ends with `─` is content, or a parked line would be
+    pushed into the transcript and confirmed as sent.
+  - `_pi_unresolved_pi_pane` (new): a capture showing pi's chrome with no
+    resolvable border is an incomplete pi frame, not a shell — confirmed only
+    from evidence ([REQ-7]).
+  - `_pi_visible` (new): bounded polling for "did the typed line render",
+    because `send-keys` only queues bytes in the pane.
   - `_pi_parse_regions` (modified): the composer block is the run of
     non-chrome, non-blank lines directly above the status border, bounded to
     `_PI_COMP_MAX_LINES` (4 — the probe is the *tail* of the line, so the
-    bottom window is what evidence needs). When that run is empty, a single
-    blank gap above the border is skipped and the next non-blank,
-    non-chrome block is the composer; if that block is empty or all chrome,
-    the composer is empty and nothing is pushed into the transcript by the
-    gap. Everything above the block stays transcript, everything below the
-    border stays `_pi_below` ([REQ-1], [REQ-4]).
+    bottom window is what evidence needs), with its bottom edge the lowest
+    non-blank line within `_PI_COMP_SCAN_LINES` above the border (a blank gap
+    is tolerated, so a missing composer top border no longer collapses the
+    region) ([REQ-1], [REQ-4]).
   - `tmux_send_line` (modified), same signature and return contract:
-    1. Type the line until visible (unchanged, 2 attempts; warn when the text
-       was already on screen before typing).
-    2. Decision capture: on a pi layout the mode is now **strict unless the
-       text sits below the border** (the shell-launch case, which keeps the
-       legacy change check). The transcript branch that returned 1 before any
-       Enter is gone — visible-but-unproven is *unknown*, not *sent*
-       ([REQ-2]).
+    1. Type the line until it renders (2 attempts, bounded polling) — a line
+       that never renders gets one **last-resort Enter** before the failure,
+       because its bytes are already queued ([REQ-9]).
+    2. Decision capture: strict mode for every pi pane (recognized layout with
+       the text above the border, or an unresolved pi frame) and the legacy
+       change check only for a genuine shell. The branch that returned 1
+       before any Enter is gone — visible-but-unproven is *unknown*, not
+       *sent* ([REQ-2]).
     3. Enter loop, unchanged in shape: strict success = `probe ∈ transcript ∧
-       probe ∉ composer`; a line that is gone from the *whole* pane and never
-       reached the transcript is re-typed **once** ([REQ-5]); otherwise retry
-       Enter.
+       probe ∉ composer`; a line gone from the *whole* pane and never in the
+       transcript is re-typed **once** ([REQ-5]); otherwise retry Enter. The
+       loop also latches strict mode the moment a capture resolves a pi
+       layout.
     4. Final failure warns with the exact work attempted ("typed N time(s),
        Enter N time(s) … may still be parked in the composer") ([REQ-6]).
 - **`tests/sub-common.test.sh`** (extended): the fake tmux gains a
@@ -97,10 +102,10 @@ between the typed text and the status border:
 
 ```mermaid
 flowchart TD
-  A["tmux_send_line target text"] --> B["type line ×2 until probe visible"]
-  B -- "never visible" --> F["return 1"]
+  A["tmux_send_line target text"] --> B["type line ×2 until it renders"]
+  B -- "never renders" --> B1["last-resort Enter (bytes are queued)"] --> F["return 1"]
   B --> C["capture-pane → _pi_parse_regions"]
-  C --> D{"layout ∧ probe below border?"}
+  C --> D{"pi pane? (layout above the border, or chrome without a border)"}
   D -- yes (shell launch) --> G["generic mode: pane changed?"]
   D -- no --> S["strict mode (any pi pane, composer or unknown)"]
   S --> E["Enter → settle → capture/parse"]
@@ -160,9 +165,13 @@ flowchart TD
   never in a chrome row, so the mode stays strict); the ambiguous case costs
   one harmless Enter and could, in the rare case of a pre-existing identical
   copy on screen, confirm a line whose keystrokes were lost (warned about by
-  the "already visible" warning); a future TUI redesign degrades to the legacy
-  change check.
+  the "already visible" warning); the evidence rule needs pi to echo the
+  submitted turn verbatim into the transcript; a future TUI redesign degrades
+  to the legacy change check.
 
 ## Audit note
 
-See `specs/fix-parked-prompt/audit.md`.
+See `specs/fix-parked-prompt/audit.md` — an independent `reviewer` pass; its
+one **Strong** finding (the never-rendered bail-out stranded a queued line
+without pressing Enter) and three **Worth exploring** ones are fixed here, two
+residuals are documented.
