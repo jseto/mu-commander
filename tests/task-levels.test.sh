@@ -237,24 +237,34 @@ JSON
 }
 
 t_req13_child_launch_loads_pi_subagents() {
-  # An installed pi-subagents package rides on -e (ahead of the kickoff),
-  # SUB_CHILD_SUBAGENTS=0 opts out, and the install-presence check runs
-  # against $LAUNCH_HOME — an install missing while enabled degrades to a
-  # plain launch, which t_req9 already asserts under the default
-  # package-free $LAUNCH_HOME.
-  local home="$SCRATCH/launch-home-pkg" want
-  mkdir -p "$home/.pi/agent/npm/node_modules/pi-subagents"
-  : > "$home/.pi/agent/npm/node_modules/pi-subagents/index.js"
+  # The installed @tintinweb/pi-subagents package rides on -e as its src
+  # entry (ahead of the kickoff), SUB_CHILD_SUBAGENTS=0 opts out, and the
+  # install-presence check runs against $LAUNCH_HOME — an install missing
+  # while enabled degrades to a plain launch, which t_req9 already asserts
+  # under the default package-free $LAUNCH_HOME.
+  local home="$SCRATCH/launch-home-pkg" pkg want
+  pkg="$home/.pi/agent/npm/node_modules/@tintinweb/pi-subagents"
+  mkdir -p "$pkg/src"
+  : > "$pkg/src/index.ts"
   LAUNCH_HOME=$home
 
   launch "--model a/b --thinking xhigh"
-  want="pi -n demo --no-extensions -e npm:pi-subagents --model a/b --thinking xhigh --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  want="pi -n demo --no-extensions -e $(printf '%q' "$pkg/src/index.ts") --model a/b --thinking xhigh --approve $(printf '%q' "$LAUNCH_KICKOFF")"
   [ "$OUT" = "$want" ] || fail "installed package must ride on -e ahead of the kickoff,
      got: $OUT"
 
   launch ""
-  want="pi -n demo --no-extensions -e npm:pi-subagents --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  want="pi -n demo --no-extensions -e $(printf '%q' "$pkg/src/index.ts") --approve $(printf '%q' "$LAUNCH_KICKOFF")"
   [ "$OUT" = "$want" ] || fail "installed package must load with no option words,
+     got: $OUT"
+
+  # An install with no src tree (dist-only layout) falls back to the package
+  # spec; `npm:@tintinweb/pi-subagents:src` is not a valid spec (pi hands the
+  # literal remainder to npm install), so it must never appear.
+  rm -f "$pkg/src/index.ts"
+  launch ""
+  want="pi -n demo --no-extensions -e npm:@tintinweb/pi-subagents --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  [ "$OUT" = "$want" ] || fail "a src-less install must fall back to the package spec,
      got: $OUT"
 
   launch "" SUB_CHILD_SUBAGENTS=0

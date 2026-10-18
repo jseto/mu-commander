@@ -152,14 +152,15 @@ KICKOFF="Read the task brief at $TF and complete the full flow (atomic specs, im
 
 # 5. Boot pi in a named tmux session, rooted in the worktree. The isolated
 #    agent directory deliberately provides no extensions or packages of its
-#    own: pi-subagents rides on the launch line instead (child_subagents_source).
+#    own: @tintinweb/pi-subagents rides on the launch line instead
+#    (child_subagents_source).
 CHILD_AGENT_DIR=$(prepare_child_agent_dir "$(scratch_root "$ROOT")/agent-dirs/$TASK")
 # pi-subagents loads via -e (pi_launch_command), not through the agent
 # directory. A missing install degrades to a plain child rather than failing
 # the spawn — but say so loudly, the child would silently lose its
 # delegation tools otherwise.
 if [ "${SUB_CHILD_SUBAGENTS:-1}" != 0 ] && [ -z "$(child_subagents_source)" ]; then
-  warn "pi-subagents not installed under \$HOME/.pi/agent/npm — child starts without it"
+  warn "@tintinweb/pi-subagents not installed under \$HOME/.pi/agent/npm — child starts without it"
 fi
 # The -e assignments are intentional: tmux servers may predate this shell's
 # environment, so inheriting the notice targets is not sufficient.

@@ -224,21 +224,32 @@ resolve_child_launch_flags() { # $1=level $2=model $3=thinking
   return 0
 }
 
-# Echo the pi command line that boots a child session. The resolved
-# model/thinking option words ($3, from resolve_child_launch_flags) sit among
-# The pi-subagents package source children load explicitly on their launch
-# line, or an empty string when they must start without it: SUB_CHILD_SUBAGENTS=0
-# opts out, and a missing local install degrades to a plain child instead of
-# failing the spawn. pi_launch_command is the only consumer — `-e npm:pi-subagents`
-# gives a child the package's extension and skills for one invocation while
-# --no-extensions keeps every other discovered, configured, and built-in
-# extension off (docs/packages.md: `pi -e npm:<name>` loads a package without
-# adding it to settings, so the deliberately empty child settings file stays
-# empty).
+# Echo the subagents source children load explicitly on their launch line, or
+# an empty string when they must start without it: SUB_CHILD_SUBAGENTS=0 opts
+# out, and a missing local install degrades to a plain child instead of failing
+# the spawn. The source is the @tintinweb/pi-subagents package's src entry
+# (user directive, 2026-10-17: "let children to load @tintinweb/pi-subagents:src
+# instead of pi-subagents extension. remember that for the future") — its
+# package manifest declares ./src/index.ts, so naming the file directly is the
+# same extension pi would pick up, minus a version re-resolve on every spawn.
+# `npm:@tintinweb/pi-subagents` is the fallback for an install that ships no
+# src tree. NOTE: `npm:@tintinweb/pi-subagents:src` is NOT a valid spec — pi
+# strips only the `npm:` prefix and hands the rest to npm install verbatim
+# (`npm install @tintinweb/pi-subagents:src` → ENOENT), failing the spawn.
+# pi_launch_command is the only consumer; `-e <source>` gives a child the
+# extension for one invocation while --no-extensions keeps every other
+# discovered, configured, and built-in extension off (docs/packages.md:
+# `pi -e npm:<name>` loads a package without adding it to settings, so the
+# deliberately empty child settings file stays empty).
 child_subagents_source() {
   [ "${SUB_CHILD_SUBAGENTS:-1}" = 0 ] && return 0
-  [ -f "$HOME/.pi/agent/npm/node_modules/pi-subagents/index.js" ] || return 0
-  printf 'npm:pi-subagents'
+  local pkg="$HOME/.pi/agent/npm/node_modules/@tintinweb/pi-subagents"
+  if [ -f "$pkg/src/index.ts" ]; then
+    printf '%s' "$pkg/src/index.ts"
+    return 0
+  fi
+  [ -d "$pkg" ] || return 0
+  printf 'npm:@tintinweb/pi-subagents'
 }
 
 # the options — before the kickoff message argument — so pi parses them as
@@ -256,8 +267,9 @@ pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
 
 # Prepare an isolated Pi agent directory for a child. It preserves non-extension
 # resources such as settings metadata, skills, prompts, and themes, but gives
-# the child no extensions or packages at all — pi-subagents, the one package
-# children load, is passed on the launch line instead (pi_launch_command).
+# the child no extensions or packages at all — @tintinweb/pi-subagents, the one
+# extension children load, is passed on the launch line instead
+# (pi_launch_command).
 # The directory lives in the
 # gitignored scratch dir of the main checkout (outside the worktree) and is
 # removed on retirement.
