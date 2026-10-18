@@ -337,14 +337,78 @@ _flatten() { printf '%s' "$1" | tr -d '[:space:]'; }
 # Flattened text currently shown in a pane.
 _pane_flattened() { tmux capture-pane -t "$1" -p 2>/dev/null | tr -d '[:space:]' || true; }
 
-# True when the probe is visible anywhere in the pane, polling a bounded
+# Remove shell-escaping backslashes (`\x` becomes `x`), in pure bash so this
+# file stays sourceable with a restricted PATH.
+_shell_unescape() { # $1=text
+  local s=$1
+  local bs=$'\\' out='' c='' i n=${#s}
+  for (( i = 0; i < n; i++ )); do
+    c=${s:i:1}
+    if [ "$c" = "$bs" ] && (( i + 1 < n )); then
+      (( i++ ))
+      out+=${s:i:1}
+    else
+      out+=$c
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# The probes a typed line is looked for by: the literal text (as sent, so a
+# shell-escaped launch line keeps its backslashes) and the same text with the
+# shell's escaping backslashes stripped. Both regions are bottom-anchored (the
+# composer and the newest transcript line sit at the pane's foot), so the tail
+# survives pane wrapping and scrollback even when the head of a long line is
+# out of view.
+#
+# The stripped form exists because the SHELL removes those backslashes before
+# pi ever sees the line: pi shows `(or BLOCKED: <reason>)`, never
+# `\"DONE: \<one-line\ summary\>\"` (2026-10-18 — the kickoff confirmation
+# failed for exactly that reason). Probing one form only ever confirmed a send
+# into a pane that echoes the bytes verbatim. Only the backslash escapes are
+# resolved — a `printf %q` line carrying control characters (which %q renders
+# as `$'…'`) is out of scope: no such launch line exists today, and a probe
+# that matched neither form only costs a retype, never a false success.
+_PI_PROBE_TAIL=60
+_PI_PROBES=()
+
+# Set the probe set for a typed line: flattened, tail-clamped, duplicates
+# dropped, the literal form first.
+_set_probes() { # $1=text
+  local form clamped dup='' existing
+  _PI_PROBES=()
+  for form in "$(_flatten "$1")" "$(_flatten "$(_shell_unescape "$1")")"; do
+    [ -n "$form" ] || continue
+    clamped=$form
+    # Bash's ${var: -n} yields an EMPTY string for strings shorter than n, so
+    # clamp to the full text instead of silently probing for "".
+    if [ "${#clamped}" -gt "$_PI_PROBE_TAIL" ]; then clamped=${clamped: -$_PI_PROBE_TAIL}; fi
+    dup=''
+    for existing in ${_PI_PROBES[@]+"${_PI_PROBES[@]}"}; do
+      if [ "$existing" = "$clamped" ]; then dup=1; break; fi
+    done
+    [ -n "$dup" ] || _PI_PROBES+=("$clamped")
+  done
+  return 0
+}
+
+# True when any probe form appears in already-flattened text $1.
+_has_probe() { # $1=text
+  local p
+  for p in ${_PI_PROBES[@]+"${_PI_PROBES[@]}"}; do
+    grep -qF -- "$p" <<<"$1" && return 0
+  done
+  return 1
+}
+
+# True when a probe is visible anywhere in the pane, polling a bounded
 # number of times: `send-keys` only hands the bytes to the pane's input queue,
 # and a TUI mid-redraw (slow extension init, model switch, compaction) can hold
 # them there long after the call returned.
-_pi_visible() { # $1=target $2=probe
+_pi_visible() { # $1=target
   local n
   for (( n = 0; n < _PI_VISIBILITY_TRIES; n++ )); do
-    if _pane_flattened "$1" | grep -qF -- "$2"; then return 0; fi
+    if _has_probe "$(_pane_flattened "$1")"; then return 0; fi
     sleep "$_PI_TYPE_SETTLE"
   done
   return 1
@@ -504,8 +568,8 @@ _pi_regions_of() { # $1=tmux target
 
 # True when the pane currently holds the line in pi's composer — the prompt
 # is parked (unsent). Needs a recognized layout; "no evidence" is false.
-_pi_composer_holds() { # $1=probe
-  [ "$_pi_layout" = 1 ] && grep -qF -- "$1" <<<"$_pi_comp"
+_pi_composer_holds() {
+  [ "$_pi_layout" = 1 ] && _has_probe "$_pi_comp"
 }
 
 # True when the pane shows submission evidence for the line: it left the
@@ -518,10 +582,19 @@ _pi_composer_holds() { # $1=probe
 # transcript verbatim (at least its tail — which is all the probe matches). A
 # renderer that folds or truncates the turn would turn a submitted line into
 # "vanished" and re-type it.
-_pi_submission_evidence() { # $1=probe
-  [ "$_pi_layout" = 1 ] \
-    && grep -qF -- "$1" <<<"$_pi_trans" \
-    && ! grep -qF -- "$1" <<<"$_pi_comp"
+#
+# Any probe form counts as the submitted line (a shell-escaped launch line
+# reaches pi unescaped), but a form sitting in the composer blocks the evidence
+# whatever else matches: a parked line is never evidence, which is the
+# never-strand rule.
+_pi_submission_evidence() {
+  [ "$_pi_layout" = 1 ] || return 1
+  # Any probe form counts as the submitted line — pi never receives the shell's
+  # backslashes — but a form sitting in the composer blocks the evidence
+  # whatever else matches: a parked line is never evidence, which is the
+  # never-strand rule.
+  _has_probe "$_pi_comp" && return 1
+  _has_probe "$_pi_trans"
 }
 
 # True when the capture shows pi's box-drawing chrome but no resolvable status
@@ -544,16 +617,36 @@ _pi_unresolved_pi_pane() { # $1=flattened capture
 # submission (a busy redraw changes the pane too), so this helper confirms
 # positively, per pane kind:
 #
-#   * pi's TUI (status-border layout, see _pi_parse_regions): success needs
-#     submission evidence — the line left the composer region and appears in
-#     the transcript region. While the line sits in the composer, Enter is
-#     retried (bounded by [attempts]) no matter what else the pane does. A
-#     line that vanishes from the pane without ever reaching the transcript
-#     (TUI reset / compaction wipe) is typed once more; a second vanish or
-#     exhausted attempts fails.
+#   * pi's TUI (status-border layout, see _pi_parse_regions), the `auto`
+#     expectation: success needs submission evidence — the line left the
+#     composer region and appears in the transcript region. While the line
+#     sits in the composer, Enter is retried (bounded by [attempts]) no matter
+#     what else the pane does. A line that vanishes from the pane without ever
+#     reaching the transcript (TUI reset / compaction wipe) is typed once more;
+#     a second vanish or exhausted attempts fails.
 #   * any other pane (a shell — the start-main.sh / sub-spawn.sh launch
 #     path, where the typed line lives at the prompt, below pi's border):
 #     the legacy confirmation — the pane content changed after an Enter.
+#
+# The [expectation] argument (5th) says which of the two panes the caller is
+# typing into:
+#
+#   auto    (default) decide from the capture, as above: a capture that
+#           resolves as pi's TUI escalates to transcript evidence.
+#   shell   the caller types a SHELL command into a fresh shell pane (the
+#           launch lines of sub-spawn.sh / start-main.sh). The confirmation
+#           stays the shell one — the pane changed after the Enter — and never
+#           escalates: a launch line is not a composer message and can never
+#           appear in pi's transcript, and a fast-booting pi turned the strict
+#           rule into a guaranteed failure (2026-10-18: three spawns rolled
+#           back, each re-typing the launch command into the running pi). It
+#           also never re-types: that retype is only reachable through the
+#           strict path. Declaring the pane kind is what keeps the guarantee
+#           honest; guessing it from the text would not.
+#
+# Either way a change is never evidence while the text is shown parked in a pi
+# composer, and Enter keeps being retried — the shell expectation strands
+# nothing either.
 #
 # Returns 0 only when confirmed submitted. Returns 1 when it could not be
 # confirmed. Callers decide what an unconfirmed send means for them; the sub-*
@@ -567,31 +660,34 @@ _pi_unresolved_pi_pane() { # $1=flattened capture
 # it is what left an instruction parked in pi-riak-250-review's composer on
 # 2026-10-17. An Enter against an already-submitted line is harmless; a prompt
 # nobody submits is not.
-tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
-  local target=$1 text=$2 attempts=${3:-4} settle=${4:-1}
-  local probe before after i strict=0 retyped=0 typed=0 entered=0
-  probe=$(_flatten "$text")
-  # Both regions are bottom-anchored (the composer and the newest transcript
-  # line sit at the pane's foot), so the tail survives pane wrapping and
-  # scrollback even when the head of a long line is out of view. Bash's
-  # ${var: -60} yields an EMPTY string for strings shorter than 60, so clamp
-  # to the full text instead of silently probing for "".
-  if [ ${#probe} -gt 60 ]; then probe=${probe: -60}; fi
-  if [ -z "$probe" ]; then
+tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds] [expectation]
+  local target=$1 text=$2 attempts=${3:-4} settle=${4:-1} expect=${5:-auto}
+  local before after i strict=0 retyped=0 typed=0 entered=0
+  # An unknown expectation is a caller bug, and degrading it to 'auto' would
+  # reproduce the very failure this argument exists to prevent (2026-10-18):
+  # a typo would silently drop the shell confirmation.
+  case $expect in
+    auto|shell) ;;
+    *) die "tmux_send_line: unknown expectation '$expect' for $target (auto|shell)" ;;
+  esac
+  # Evidence is looked for in both the literal typed text and the form the
+  # shell hands to the program: pi never sees the backslashes (see _set_probes).
+  _set_probes "$text"
+  if [ -z "${_PI_PROBES[0]:-}" ]; then
     warn "nothing to send to $target (empty line)"
     return 1
   fi
-  if _pane_flattened "$target" | grep -qF -- "$probe"; then
+  if _has_probe "$(_pane_flattened "$target")"; then
     warn "the text was already visible in $target before typing — the confirmation below may be satisfied by that copy rather than by this send"
   fi
   # 1) Type the line until it renders somewhere in the pane.
   for (( i = 0; i < _PI_TYPE_ATTEMPTS; i++ )); do
     tmux send-keys -t "$target" -l "$text"
     typed=$((typed + 1))
-    if _pi_visible "$target" "$probe"; then break; fi
+    if _pi_visible "$target"; then break; fi
     warn "text not visible in $target yet; retyping"
   done
-  if ! _pi_visible "$target" "$probe"; then
+  if ! _pi_visible "$target"; then
     # The bytes are already in the pane's input queue, so the composer may
     # render this line a frame later: press Enter rather than abandon it. This
     # is the last-resort Enter of the never-strand rule — the helper still
@@ -607,12 +703,15 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
   #    a redraw) the state is UNKNOWN and handled exactly like parked: Enter,
   #    then evidence. Never a bail-out before the first Enter. Only text BELOW
   #    pi's border is the shell-launch case (a prompt of a pane that merely
-  #    looks like pi), which keeps the legacy change check.
+  #    looks like pi), which keeps the legacy change check — and a shell
+  #    expectation keeps it whatever the pane does afterwards.
   _pi_regions_of "$target"
-  if [ "$_pi_layout" = 1 ] && ! grep -qF -- "$probe" <<<"$_pi_below"; then
-    strict=1
-  elif _pi_unresolved_pi_pane "$_pi_all"; then
-    strict=1
+  if [ "$expect" = auto ]; then
+    if [ "$_pi_layout" = 1 ] && ! _has_probe "$_pi_below"; then
+      strict=1
+    elif _pi_unresolved_pi_pane "$_pi_all"; then
+      strict=1
+    fi
   fi
   before=$_pi_all   # baseline from the decision capture (same pane, no re-capture)
   for (( i = 0; i < attempts; i++ )); do
@@ -620,34 +719,38 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
     entered=$((entered + 1))
     sleep "$settle"
     _pi_regions_of "$target"
-    # Escalate the moment a capture places the line inside pi's TUI — even a
-    # send that started out generic must never be confirmed generically while
-    # the line may be parked in a composer (this also recovers a pane whose
-    # first capture was an incomplete frame: one later capture that resolves
-    # the layout latches strict mode for the rest of the send).
-    if [ "$_pi_layout" = 1 ] && ! grep -qF -- "$probe" <<<"$_pi_below"; then
-      strict=1
-    elif _pi_unresolved_pi_pane "$_pi_all"; then
-      strict=1
+    if [ "$expect" = auto ]; then
+      # Escalate the moment a capture places the line inside pi's TUI — even a
+      # send that started out generic must never be confirmed generically while
+      # the line may be parked in a composer (this also recovers a pane whose
+      # first capture was an incomplete frame: one later capture that resolves
+      # the layout latches strict mode for the rest of the send).
+      if [ "$_pi_layout" = 1 ] && ! _has_probe "$_pi_below"; then
+        strict=1
+      elif _pi_unresolved_pi_pane "$_pi_all"; then
+        strict=1
+      fi
     fi
     if [ "$strict" = 1 ]; then
       # Layout lost (mid-redraw / dead target): no evidence, retry bounded.
       if [ "$_pi_layout" = 1 ]; then
         # Positive evidence: the line left the composer and reached the transcript.
-        if _pi_submission_evidence "$probe"; then
+        if _pi_submission_evidence; then
           return 0
         fi
         # Gone from the whole pane without ever reaching the transcript:
         # a TUI reset wiped it — type it once more, then stay strict. One
         # quick re-capture first: a merely LATE transcript render must not
-        # lead to a duplicate line.
-        if ! grep -qF -- "$probe" <<<"$_pi_all"; then
+        # lead to a duplicate line. Unreachable for a shell expectation: that
+        # one never latches strict mode, so a launch command can never be
+        # typed into a pi that has since booted.
+        if ! _has_probe "$_pi_all"; then
           sleep "$_PI_VANISH_RECHECK"
           _pi_regions_of "$target"
-          if _pi_submission_evidence "$probe"; then
+          if _pi_submission_evidence; then
             return 0 # the transcript render was only slow — submitted
           fi
-          if grep -qF -- "$probe" <<<"$_pi_all"; then
+          if _has_probe "$_pi_all"; then
             continue # the line is back (TUI restored it): parked again
           fi
           if [ "$retyped" -ge 1 ]; then
@@ -664,7 +767,13 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
       continue # still parked (or no evidence yet): retry Enter
     fi
     # Shell-like pane: legacy confirmation on the same capture, guarded so a
-    # pane that turns out to hold a parked pi composer can never satisfy it.
+    # pane that turns out to hold a parked pi composer can never satisfy it —
+    # with the shell expectation this is the only way back to a retried Enter,
+    # so nothing is ever stranded there either.
+    if _pi_composer_holds; then
+      before=$_pi_all
+      continue
+    fi
     if [ -n "$_pi_all" ]; then
       after=$_pi_all
       if [ "$after" != "$before" ]; then return 0; fi
@@ -673,6 +782,15 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds]
   done
   warn "could not confirm that $target submitted the line: typed it ${typed} time(s), sent Enter ${entered} time(s) — it may still be parked in $target's composer; check the pane"
   return 1
+}
+
+# Type a SHELL COMMAND into a fresh shell pane and confirm it ran — the launch
+# path of sub-spawn.sh / start-main.sh. The wrapper owns the knobs such a send
+# needs (the bounded Enter retries and the shell expectation), so no caller
+# learns them: restating them at every call site is how a launch would quietly
+# lose its confirmation.
+tmux_send_shell_line() { # $1=tmux target $2=text [attempts] [settle seconds]
+  tmux_send_line "$1" "$2" "${3:-4}" "${4:-1}" shell
 }
 
 # Tail of the task's tmux pane (trailing blank lines dropped), or a note

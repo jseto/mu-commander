@@ -79,12 +79,12 @@ tmux set-window-option -t "$SESS:" main-pane-width 50% >/dev/null 2>&1 || true
 tmux select-layout -t "$SESS:" main-vertical >/dev/null 2>&1 || true
 sleep 0.5
 # Plain $PI_BIN, no -n/--no-extensions: the main session is not a child.
-# tmux_send_line re-types the line and retries Enter until the launch is
-# confirmed — this pane is a shell (no pi TUI yet), so the confirmation is
-# the pane content changing after an Enter — and a dropped keystroke cannot
-# leave the session without pi.
+# tmux_send_shell_line retries Enter until the launch is confirmed — this pane
+# is a shell (no pi TUI yet), and a shell launch line is confirmed by the pane
+# changing after the Enter, never by pi transcript evidence it can never
+# satisfy. A dropped keystroke still cannot leave the session without pi.
 printf -v LAUNCH '%q' "$PI_BIN"
-tmux_send_line "$SESS" "$LAUNCH"
+tmux_send_shell_line "$SESS" "$LAUNCH"
 
 if [ "$DETACH" = 1 ]; then
   info "started detached tmux session $SESS (rooted at $ROOT, pi: $PI_BIN); attach with: tmux attach -t $SESS"

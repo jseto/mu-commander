@@ -289,6 +289,16 @@ setup_send() {
 #               the composer and Enter is a no-op: the pane state that is
 #               indistinguishable from a parked prompt once the region
 #               boundaries blur (specs/fix-parked-prompt)
+#   boot        a SHELL pane whose Enter runs the typed line: pi takes the pane
+#               over and shows $FAKE_TMUX_TRANSCRIPT in its transcript — the
+#               kickoff pi received, never the whole command line
+#               (specs/fix-launch-confirm REQ-3)
+#   boot-blank  the same, but pi has not rendered the kickoff yet: the pane
+#               changed and is a pi TUI with an empty transcript and composer
+#               (specs/fix-launch-confirm REQ-1)
+#   boot-park   the Enter takes the pane over to pi but leaves the typed line
+#               parked in the composer; every later Enter is swallowed
+#               (fix-launch-confirm REQ-4)
 # FAKE_TMUX_LAYOUT selects the pane shape (pi default):
 #   shell  an interactive shell pane (no pi layout)
 #   live   transcript / blank / "── ⠴ Working ──" / blank / composer / border
@@ -344,16 +354,31 @@ case "${1:-}" in
           : > "$S/composer"
         fi ;;
       vanish-all) : > "$S/composer" ;;
+      boot|boot-blank|boot-park)
+        # The shell runs the line: pi takes the pane over and shows the
+        # message it received as its initial one — the kickoff, with the
+        # shell's backslashes already stripped, never the whole command line.
+        # boot-blank is pi before it renders that message; boot-park is the
+        # typed line still sitting in the composer, submitted by nobody.
+        : > "$S/booted"
+        case "$mode" in
+          boot)      [ -z "${FAKE_TMUX_TRANSCRIPT:-}" ] || printf '%s\n' "$FAKE_TMUX_TRANSCRIPT" > "$S/transcript" ;;
+          boot-blank) : > "$S/composer" ;;
+          boot-park)  exit 0 ;;
+        esac
+        : > "$S/composer" ;;
     esac
     exit 0 ;;
   capture-pane)
-    if [ "${FAKE_TMUX_LAYOUT:-pi}" = shell ]; then
+    layout=${FAKE_TMUX_LAYOUT:-pi}
+    [ -f "$S/booted" ] && layout=pi    # pi has taken the pane over
+    if [ "$layout" = shell ]; then
       if [ -s "$S/transcript" ]; then cat "$S/transcript"; fi
       printf 'user@host:~$ %s\n' "$(cat "$S/composer")"
       exit 0
     fi
     if [ -s "$S/transcript" ]; then cat "$S/transcript"; fi
-    case "${FAKE_TMUX_LAYOUT:-pi}" in
+    case "$layout" in
       live)   # working row, blank, composer — the composer sits directly
               # above the status border
         printf '\n%s\n\n%s\n' "$W" "$(cat "$S/composer")" ;;
@@ -383,13 +408,71 @@ EOS
 }
 
 SEND_RC=0; SEND_OUT=; SEND_ERR=
-run_send() { # <text> [mode] [layout] [attempts] [settle]
-  local text=$1 mode=${2:-ok} layout=${3:-pi} attempts=${4:-3} settle=${5:-0}
+run_send() { # <text> [mode] [layout] [attempts] [settle] [expectation]
+  local text=$1 mode=${2:-ok} layout=${3:-pi} attempts=${4:-3} settle=${5:-0} expect=${6:-auto}
   SEND_RC=0
   SEND_OUT=$(env FAKE_TMUX_MODE="$mode" FAKE_TMUX_LAYOUT="$layout" \
-    bash -c "source '$COMMON'; tmux_send_line pi-demo $(printf '%q' "$text") $attempts $settle" \
+    bash -c "source '$COMMON'; tmux_send_line pi-demo $(printf '%q' "$text") $attempts $settle $expect" \
     2>"$SB/err") || SEND_RC=$?
   SEND_ERR=$(cat "$SB/err")
+}
+
+# The launch line sub-spawn.sh types: a pi command whose kickoff argument is
+# shell-escaped, so the probe the old helper built could never appear in what
+# pi renders.
+LAUNCH_LINE='pi -n demo --no-extensions --approve Read\ the\ brief\ at\ /main/tmp/pi-sub/tasks/demo.md\ and\ finish.\ Report\ with\ sub-report.sh\ demo\ \"DONE:\ \<one-line\ summary\>\ \(PR\ #...\)\"'
+# The message pi received as its initial one: the kickoff, backslashes stripped,
+# and nothing of the `pi -n demo …` command that carried it.
+export FAKE_TMUX_TRANSCRIPT='Read the brief at /main/tmp/pi-sub/tasks/demo.md and finish. Report with sub-report.sh demo "DONE: <one-line summary> (PR #...)"'
+
+# Confirm a shell-expectation launch whose Enter boots pi before the first
+# confirmation capture, with pi not yet showing the kickoff (the 2026-10-18
+# incident: three spawns rolled back). Nothing about the pane can satisfy the
+# pi rule — the launch line is not in a transcript and never will be — so only
+# the shell confirmation can settle this send.
+t_send_req1_launch_confirmed_when_pi_boots_fast() {
+  setup_send
+  run_send "$LAUNCH_LINE" boot-blank shell 3 0 shell
+  [ "$SEND_RC" -eq 0 ] \
+    || fail "the shell expectation must confirm a launch whose pane booted pi, got $SEND_RC: $SEND_ERR"
+  [ -z "$SEND_ERR" ] || fail "a confirmed launch must not warn: $SEND_ERR"
+  [ "$(sent_enters)" -eq 1 ] \
+    || fail "the launch must be confirmed from the first Enter, got $(sent_enters): $(cat "$FAKE_TMUX_DIR/log")"
+}
+
+# The same incident, second requirement: the launch line is never typed into
+# the pi that has since booted (it used to land as a steering message).
+t_send_req2_launch_line_is_never_retyped_into_pi() {
+  setup_send
+  run_send "$LAUNCH_LINE" boot-blank shell 3 0 shell
+  [ "$SEND_RC" -eq 0 ] || fail "expected the launch to be confirmed, got $SEND_RC: $SEND_ERR"
+  [ "$(sent_literals)" -eq 1 ] \
+    || fail "the launch line must be typed exactly once, got $(sent_literals): $(cat "$FAKE_TMUX_DIR/log")"
+}
+
+# A shell expectation never confirms from a pane change while the text sits
+# in a pi composer — and never strands it either: Enter keeps being sent.
+t_send_req4_shell_send_never_confirms_a_parked_composer() {
+  setup_send
+  run_send "$LAUNCH_LINE" boot-park shell 3 0 shell
+  [ "$SEND_RC" -ne 0 ] || fail "a launch parked in pi's composer was reported as sent"
+  [ "$(sent_enters)" -ge 2 ] || fail "Enter not retried: $(cat "$FAKE_TMUX_DIR/log")"
+  grep -Fq "$LAUNCH_LINE" "$FAKE_TMUX_DIR/composer" \
+    || fail "the text must stay parked, never abandoned silently: $(cat "$FAKE_TMUX_DIR/composer")"
+}
+
+# pi renders the message it received, with the shell's backslashes already
+# stripped: the unescaped form of the typed line is submission evidence
+# (REQ-3). The typed form can never match it — that mismatch was the bug.
+t_send_req3_unescaped_form_is_submission_evidence() {
+  setup_send
+  run_send "$LAUNCH_LINE" boot shell 3 0 auto
+  [ "$SEND_RC" -eq 0 ] \
+    || fail "the unescaped transcript form must confirm the send, got $SEND_RC: $SEND_ERR"
+  grep -Fq "$FAKE_TMUX_TRANSCRIPT" "$FAKE_TMUX_DIR/transcript" \
+    || fail "the line never reached the transcript"
+  [ "$(sent_literals)" -eq 1 ] \
+    || fail "the send must be confirmed without a retype: $(cat "$FAKE_TMUX_DIR/log")"
 }
 
 sent_literals() { grep -c -- ' -l ' "$FAKE_TMUX_DIR/log"; }
@@ -606,7 +689,11 @@ run "[fix-parked-prompt REQ-1] live shape submits"                         t_sen
 run "[fix-parked-prompt REQ-2/3] unproven text is entered, then confirmed"  t_send_req2_unproven_text_is_entered_then_confirmed
 run "[fix-parked-prompt REQ-5] no retype on an ambiguous capture"          t_send_req5_no_retype_on_ambiguous_capture
 run "[fix-parked-prompt REQ-6] failure names what was attempted"           t_send_req6_failure_names_what_was_attempted
-run "[fix-send-confirm REQ-10 / fix-parked-prompt REQ-8] shellcheck-clean"  t_send_req10_shellcheck_clean
+run "[fix-launch-confirm REQ-1] launch confirmed when pi boots fast"       t_send_req1_launch_confirmed_when_pi_boots_fast
+run "[fix-launch-confirm REQ-2] launch line never retyped into pi"        t_send_req2_launch_line_is_never_retyped_into_pi
+run "[fix-launch-confirm REQ-4] shell send never confirms a composer"     t_send_req4_shell_send_never_confirms_a_parked_composer
+run "[fix-launch-confirm REQ-3] unescaped form is submission evidence"    t_send_req3_unescaped_form_is_submission_evidence
+run "[fix-send-confirm REQ-10 / fix-parked-prompt REQ-8 / fix-launch-confirm REQ-6] shellcheck-clean"  t_send_req10_shellcheck_clean
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"
