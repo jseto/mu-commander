@@ -428,6 +428,26 @@ that cannot start only warns (skip it with `SUB_SPAWN_NO_WATCH=1`). Knobs:
 `LAVISH_WATCH_REWAKE_SECONDS`, `LAVISH_WATCH_START_MARGIN`. Spec:
 `specs/lavish-wake/`, tests: `tests/lavish-wake.test.sh`.
 
+### Child PR action watch
+
+`sub-spawn.sh` also arms one `scripts/sub-pr-watch.sh` per child in a
+`pr-watch` window of the child's tmux session (it dies with the session on
+retirement, like the Lavish watcher). The watcher polls the branch checked
+out in the child's leased worktree read-only with `gh pr list` and pushes
+each event as a verified notice into the orchestrator session through
+`sub-report.sh`: a merged PR ("retire the child now"), a PR closed without
+merging, and every submitted `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED`
+review (routed back to the child with `sub-send.sh <task>`). It never mutates
+GitHub, never types into the child's pane, deduplicates submitted reviews,
+retries unconfirmed notices, and exits when the child's tmux session or
+worktree lease disappears or right after the confirmed notice for a terminal
+state. A watcher that cannot start only warns (skip both watcher windows with
+`SUB_SPAWN_NO_WATCH=1`, only this one with `SUB_SPAWN_NO_PR_WATCH=1`).
+Knobs: `PR_WATCH_INTERVAL` (scan interval, default 30 s),
+`PR_WATCH_RETRY_SECONDS` (failed-notice retry, default 5 s), `PR_WATCH_TICKS`
+(test bound, 0 = unbounded). Spec: `specs/pr-action-watch/`, tests:
+`tests/pr-action-watch.test.sh`.
+
 ### Child model and thinking levels
 
 The difficulty of the task decides the child's model and thinking level.
