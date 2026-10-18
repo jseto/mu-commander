@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end harness for fix-worktree-trust-prompt.feature: runs the real
-# scripts/sub-spawn.sh once in a fully sandboxed environment and asserts the
-# three scenarios against the child tmux pane.
+# scripts/sub-spawn.sh in a fully sandboxed environment and asserts the three
+# scenarios against the child tmux pane.
 #
 # Sandbox:
 #   - $HOME   replaced (its settings.json mirrors a real user policy, which
@@ -15,6 +15,14 @@
 #     folder-trust prompt that blocks until Enter decides (the default
 #     option persists the decision, exactly like pi);
 #   - isolated tmux server via TMUX_TMPDIR, so no live session is touched.
+#
+# The spawn runs twice, once per level mapping: once with the repository's own
+# config.json and once with a scratch mapping naming a made-up model id and an
+# unknown thinking level (specs/model-agnostic-tests — config.json is the
+# owner's to retune by hand, so no assertion here may depend on what it
+# names). The mutated pass also asserts non-vacuity: the resolved options
+# sub-spawn.sh prints must carry that made-up id, so its green cannot come
+# from the mapping being ignored.
 #
 # Usage: bash specs/fix-worktree-trust-prompt/test_spawn_trust.sh
 set -u
@@ -30,6 +38,12 @@ PASS=0
 FAIL=0
 SANDBOX=""
 SOCKDIR=""
+
+# The mutated mapping's model id / thinking level. They are written nowhere
+# else in the repository on purpose: no future config.json retune can make
+# them "already true", so the mutated pass stays a real test.
+MUTANT_MODEL="nowhere/trust harness model"
+MUTANT_THINKING="ludicrous"
 
 say()  { printf '%s\n' "$*"; }
 fail() { printf '%s\n' "$*"; return 1; }
@@ -51,6 +65,19 @@ wait_pane_has() {
   local pat=$1 tries=$((${2:-10} * 2)) i
   for ((i = 0; i < tries; i++)); do
     if pane | grep -qF -- "$pat"; then return 0; fi
+    sleep 0.5
+  done
+  return 1
+}
+
+# The same, against the pane with every space, newline and printf %q
+# backslash removed: a launch line long enough to wrap across pane rows is
+# still a single match, so an assertion about the typed line never depends on
+# where tmux broke it.
+wait_flat_pane_has() {
+  local pat=$1 tries=$((${2:-10} * 2)) i
+  for ((i = 0; i < tries; i++)); do
+    if pane | tr -d '\\[:space:]' | grep -qF -- "$pat"; then return 0; fi
     sleep 0.5
   done
   return 1
@@ -96,6 +123,53 @@ scenario_req2() {
 scenario_req3() {
   if ! wait_pane_has "PI-STUB: kickoff accepted: Read the task brief at" 10; then
     say "the kickoff was never accepted (stranded); the pane shows:"
+    dump_pane
+    return 1
+  fi
+  return 0
+}
+
+# [model-agnostic REQ-1] The stub must take the positional kickoff whatever
+# option values the launch line carries. Asserted here, against the stub
+# alone — no spawn, no config.json: the old parser took --model's value as
+# the kickoff, which made the [REQ-3] outcome a property of the shipped
+# mapping instead of of the harness.
+scenario_kickoff_parsing() {
+  local out
+  out=$(cd "$SANDBOX" && HOME="$SANDBOX/home" "$STUB_BIN/pi" \
+    --model "$MUTANT_MODEL" --thinking "$MUTANT_THINKING" \
+    -n some-task --no-extensions -e "$SANDBOX/ext.ts" --approve \
+    'Read the task brief at /nowhere/brief.md' 2>&1)
+  if ! grep -qF -- 'PI-STUB: kickoff accepted: Read the task brief at /nowhere/brief.md' <<<"$out"; then
+    fail "the positional message was not taken as the kickoff (an option value
+was taken instead); the stub said:
+$out"
+    return 1
+  fi
+  return 0
+}
+
+# [model-agnostic REQ-3] Non-vacuity: the mutated mapping really reached the
+# launch line. Without it the pass below could go green with the mapping
+# ignored — passing for the wrong reason, which is exactly the bug this
+# harness had.
+scenario_mutated_options_reached_the_launch_line() {
+  local out="$SANDBOX/spawn.out"
+  # The handles print the resolved option words already printf %q-escaped,
+  # which is the form the launch line carries.
+  local model thinking
+  printf -v model '%q' "$MUTANT_MODEL"
+  printf -v thinking '%q' "$MUTANT_THINKING"
+  if ! grep -qF -- "--model $model --thinking $thinking" "$out"; then
+    fail "the mutated mapping never reached the resolved launch options:
+$(grep -E '^ *launch:' "$out" 2>/dev/null)"
+    return 1
+  fi
+  # …and on the line the shell actually ran, not only in the handles echo:
+  # the handles print CHILD_LAUNCH_FLAGS, so they stay green even if
+  # pi_launch_command dropped the option words from the launch line.
+  if ! wait_flat_pane_has "${MUTANT_MODEL// /}" 10; then
+    fail "the mutated mapping never reached the typed launch line; the pane shows:"
     dump_pane
     return 1
   fi
@@ -168,15 +242,30 @@ approved=0
 kickoff=""
 args=("$@")
 idx=0
+# Options that take a value: their value is the next argv element and can
+# never be the positional kickoff. The table mirrors pi's own option list
+# (pi --help); an option that grows one only makes the stub skip one more
+# token, which is exactly the safe direction. Values arrive here already
+# unescaped and whole (the shell built the argv), so a model id may contain
+# spaces.
+value_opts=" --provider --model --api-key --system-prompt --append-system-prompt
+  --mode --session --session-id --session-dir --fork --name --models --tools
+  --exclude-tools --thinking --extension --skill --prompt-template --theme
+  --use-theme --export --tui-mode -n -e -t -xt "
+positionals_only=0
 while [ "$idx" -lt "${#args[@]}" ]; do
   arg=${args[$idx]}
-  case "$arg" in
-    --approve | -a) approved=1 ;;
-    -n | --name) idx=$((idx + 1)) ;;
-    --no-extensions | -ne) ;;
-    -*) ;;
-    *) [ -z "$kickoff" ] && kickoff=$arg ;;
-  esac
+  if [ "$positionals_only" = 1 ]; then
+    [ -z "$kickoff" ] && kickoff=$arg
+  else
+    case "$arg" in
+      --) positionals_only=1 ;;
+      --approve | -a) approved=1 ;;
+      --*=*) ;;                       # the value rides in the option itself
+      -*) case "$value_opts" in *" $arg "*) idx=$((idx + 1)) ;; esac ;;
+      *) [ -z "$kickoff" ] && kickoff=$arg ;;
+    esac
+  fi
   idx=$((idx + 1))
 done
 
@@ -283,11 +372,35 @@ EOF
   printf 'Trust-harness brief: never read; the pi stub only reports it.\n' \
     > "$BRIEF"
 
+  # The mutated level mapping: a model id that exists nowhere in the
+  # repository (spaces included, so the quoting of printf %q is exercised)
+  # and a thinking level pi has never heard of.
+  cat > "$SANDBOX/mutant-levels.json" <<EOF
+{
+  "taskLevels": {
+    "default": "mutated",
+    "levels": {
+      "mutated": { "model": "$MUTANT_MODEL", "thinking": "$MUTANT_THINKING" }
+    }
+  }
+}
+EOF
+
   write_stubs
 }
 
+# run_spawn <task> [levels-config] — boot a child in the sandbox with a
+# clean level environment: SUB_LEVEL/SUB_MODEL/SUB_THINKING/SUB_LEVELS_CONFIG
+# are always cleared, so neither an ambient override nor the second pass can
+# decide what the first one resolves. With no <levels-config> the child
+# inherits the repository's own config.json.
 run_spawn() {
+  local task=$1 levels_cfg=${2:-}
+  local -a cfg_env=()
+  [ -n "$levels_cfg" ] && cfg_env=("SUB_LEVELS_CONFIG=$levels_cfg")
   env -u TMUX -u MAIN_SESSION -u MAIN_PANE -u PI_BIN -u SCRATCH_DIR \
+    -u SUB_LEVEL -u SUB_MODEL -u SUB_THINKING -u SUB_LEVELS_CONFIG \
+    "${cfg_env[@]+"${cfg_env[@]}"}" \
     TMUX_TMPDIR="$SOCKDIR" \
     HOME="$SANDBOX/home" \
     PATH="$STUB_BIN:$PATH" \
@@ -295,7 +408,7 @@ run_spawn() {
     STUB_ORIGIN="$SANDBOX/origin.git" \
     SUB_SPAWN_NO_VIEWER=1 \
     PI_BOOT_DELAY=2 \
-    bash "$SPAWN" "$TASK" "$MAIN" "$BRIEF" > "$SANDBOX/spawn.out" 2>&1
+    bash "$SPAWN" "$task" "$MAIN" "$BRIEF" > "$SANDBOX/spawn.out" 2>&1
 }
 
 cleanup() {
@@ -321,7 +434,14 @@ trap cleanup EXIT
 
 setup_sandbox
 
-if ! run_spawn; then
+# The stub's own argv parsing, before anything is spawned (model-agnostic
+# REQ-1).
+run_scenario "Take the positional kickoff whatever option values carry [model-agnostic REQ-1]" \
+  scenario_kickoff_parsing
+
+say ""
+say "--- pass 1: the repository's own config.json ---"
+if ! run_spawn "$TASK"; then
   say "FAIL  sub-spawn.sh exited non-zero during setup:"
   sed 's/^/      | /' "$SANDBOX/spawn.out"
   exit 1
@@ -330,6 +450,23 @@ fi
 run_scenario "Resolve project trust on a fresh worktree without a keystroke [REQ-1]" scenario_req1
 run_scenario "Leave no persistent trust decision behind [REQ-2]" scenario_req2
 run_scenario "Process the kickoff instead of stranding it [REQ-3]" scenario_req3
+
+say ""
+say "--- pass 2: a level mapping that exists nowhere in the repository ---"
+TASK="test-trust-mapping"
+SESS="pi-$TASK"
+if ! run_spawn "$TASK" "$SANDBOX/mutant-levels.json"; then
+  say "FAIL  sub-spawn.sh exited non-zero under the mutated level mapping:"
+  sed 's/^/      | /' "$SANDBOX/spawn.out"
+  exit 1
+fi
+
+run_scenario "Carry the mutated mapping onto the child's launch line [model-agnostic REQ-3]" \
+  scenario_mutated_options_reached_the_launch_line
+run_scenario "Resolve project trust on the mutated mapping without a keystroke [REQ-1]" scenario_req1
+run_scenario "Leave no persistent trust decision behind under the mutated mapping [REQ-2]" scenario_req2
+run_scenario "Process the kickoff instead of stranding it under the mutated mapping [REQ-3]" scenario_req3
+
 run_scenario "Pass shellcheck at warning severity on changed scripts" supp_lint
 
 say ""

@@ -8,7 +8,11 @@
 # The resolver tests source scripts/_sub-common.sh with SUB_FALLBACK_*/
 # SUB_LEVELS_CONFIG cleared (like tests/task-levels.test.sh); a test that
 # needs a config writes a fixture under $SCRATCH or $SB — the shipped root
-# config.json is never the subject under test. The pane tests
+# config.json is never the subject under test. Every model id in this file is
+# fixture-local (fixture-provider/recovery-model and its prefix-colliding free
+# twin) precisely so it cannot coincide with a shipped value: were the fixture
+# ever not wired up, a coincidental match with config.json would keep the
+# suite green instead of failing. The pane tests
 # sandbox a stateful fake tmux binary placed first on PATH — pane/footer/
 # session state lives in a per-test temp dir and no real tmux session is ever
 # touched.
@@ -31,7 +35,7 @@ trap 'rm -rf "$SCRATCH"' EXIT
 # test, so resolver tests that need a config point at this fixture.
 FB_FIXTURE="$SCRATCH/fixture-config.json"
 cat > "$FB_FIXTURE" <<'JSON'
-{"taskLevels":{"default":"standard","fallbackModel":"opencode-go/mimo-v2.6-flash","fallbackThinking":"high","levels":{"standard":{"model":"m","thinking":"high"}}}}
+{"taskLevels":{"default":"standard","fallbackModel":"fixture-provider/recovery-model","fallbackThinking":"high","levels":{"standard":{"model":"m","thinking":"high"}}}}
 JSON
 
 # ---------------------------------------------------------------------------
@@ -87,7 +91,7 @@ mkdir -p "$S"
 [ -f "$S/pane" ]     || : > "$S/pane"
 [ -f "$S/footer" ]   || {
   printf '%s\n' '/home/tester/repo (task/demo)' > "$S/footer"
-  printf '%s\n' '0.0%/200k (auto)          (opencode-zen-free) mimo-v2.6-flash-free • xhigh' >> "$S/footer"
+  printf '%s\n' '0.0%/200k (auto)          (fixture-free-provider) recovery-model-free • xhigh' >> "$S/footer"
 }
 
 session_exists() {
@@ -214,7 +218,7 @@ EOS
   # Default status bar: the free model whose id extends the shipped fallback id.
   {
     printf '%s\n' '/home/tester/repo (task/demo)'
-    printf '%s\n' '0.0%/200k (auto)          (opencode-zen-free) mimo-v2.6-flash-free • xhigh'
+    printf '%s\n' '0.0%/200k (auto)          (fixture-free-provider) recovery-model-free • xhigh'
   } > "$FAKE_TMUX_DIR/footer"
   export FAKE_TMUX_MODE=ok
   # Pin a fixture config and the timing so no ambient environment leaks into
@@ -224,10 +228,10 @@ EOS
 {
   "taskLevels": {
     "default": "standard",
-    "fallbackModel": "opencode-go/mimo-v2.6-flash",
+    "fallbackModel": "fixture-provider/recovery-model",
     "fallbackThinking": "high",
     "levels": {
-      "standard": { "model": "opencode-zen-free/mimo-v2.6-flash-free", "thinking": "high" }
+      "standard": { "model": "fixture-free-provider/recovery-model-free", "thinking": "high" }
     }
   }
 }
@@ -353,11 +357,11 @@ t_req6_detected_error_switches_to_fallback() {
   seed_error
   run_fallback "$TASK"
   expect_rc0
-  grep -q -- '-l /model opencode-go/mimo-v2.6-flash' "$FAKE_TMUX_DIR/log" \
+  grep -q -- '-l /model fixture-provider/recovery-model' "$FAKE_TMUX_DIR/log" \
     || fail "the model switch was not sent: $(cat "$FAKE_TMUX_DIR/log")"
   # The footer starts on the free model whose id extends the fallback id:
   # assert the switched id as a delimited token, not a substring.
-  grep -qF -- '(opencode-go) mimo-v2.6-flash' "$FAKE_TMUX_DIR/footer" \
+  grep -qF -- '(fixture-provider) recovery-model' "$FAKE_TMUX_DIR/footer" \
     || fail "the fake footer never showed the switched model: $(cat "$FAKE_TMUX_DIR/footer")"
   expect_out "switched"
 }
@@ -403,9 +407,9 @@ t_supp_popup_swallowed_enter_is_recovered() {
   export FAKE_TMUX_MODE=popup
   run_fallback "$TASK"
   expect_rc0
-  grep -Fq -- "-l /model opencode-go/mimo-v2.6-flash" "$FAKE_TMUX_DIR/log" \
+  grep -Fq -- "-l /model fixture-provider/recovery-model" "$FAKE_TMUX_DIR/log" \
     || fail "the model switch was not sent: $(cat "$FAKE_TMUX_DIR/log")"
-  grep -qF -- '(opencode-go) mimo-v2.6-flash' "$FAKE_TMUX_DIR/footer" \
+  grep -qF -- '(fixture-provider) recovery-model' "$FAKE_TMUX_DIR/footer" \
     || fail "the completion popup swallowed the switch without a nudge: $(cat "$FAKE_TMUX_DIR/footer")"
   expect_out "switched"
 }
@@ -420,7 +424,7 @@ t_req8_unconfirmed_switch_fails_loudly() {
   expect_rc_nonzero
   expect_err "ERROR:"
   expect_err "$SESS"
-  expect_err "mimo-v2.6-flash"
+  expect_err "recovery-model"
   expect_not_out "switched"
   grep -q -- ' C-u' "$FAKE_TMUX_DIR/log" \
     || fail "the composer must be cleared when the switch cannot be confirmed"
@@ -450,7 +454,7 @@ t_req10_already_on_fallback_is_a_noop() {
   seed_error
   {
     printf '%s\n' '/home/tester/repo (task/demo)'
-    printf '%s\n' '0.0%/1.0M (auto)          (opencode-go) mimo-v2.6-flash • high'
+    printf '%s\n' '0.0%/1.0M (auto)          (fixture-provider) recovery-model • high'
   } > "$FAKE_TMUX_DIR/footer"
   run_fallback "$TASK"
   expect_rc0
@@ -459,8 +463,8 @@ t_req10_already_on_fallback_is_a_noop() {
 }
 
 # [REQ-14] regression for the 2026-09-29 live test: the free model id
-# (mimo-v2.6-flash-free) *contains* the configured fallback id
-# (mimo-v2.6-flash) as a prefix. A fixed-substring guard read the status bar
+# (recovery-model-free) *contains* the configured fallback id
+# (recovery-model) as a prefix. A fixed-substring guard read the status bar
 # as "already on fallback" and the fallback silently no-op'd while the child
 # stayed stuck on the limited model. The boundary rule must send the switch.
 t_req14_prefix_collision_is_not_already_on() {
@@ -468,14 +472,14 @@ t_req14_prefix_collision_is_not_already_on() {
   setup
   add_session "$SESS"
   seed_error
-  # The sandbox footer starts on (opencode-zen-free) mimo-v2.6-flash-free • xhigh.
-  grep -qF -- 'mimo-v2.6-flash-free' "$FAKE_TMUX_DIR/footer" \
+  # The sandbox footer starts on (fixture-free-provider) recovery-model-free • xhigh.
+  grep -qF -- 'recovery-model-free' "$FAKE_TMUX_DIR/footer" \
     || fail "fixture must start on the free model"
   run_fallback "$TASK"
   expect_rc0
-  grep -q -- '-l /model opencode-go/mimo-v2.6-flash' "$FAKE_TMUX_DIR/log" \
+  grep -q -- '-l /model fixture-provider/recovery-model' "$FAKE_TMUX_DIR/log" \
     || fail "the prefix id was mistaken for the fallback model: $(cat "$FAKE_TMUX_DIR/log")"
-  grep -qF -- '(opencode-go) mimo-v2.6-flash' "$FAKE_TMUX_DIR/footer" \
+  grep -qF -- '(fixture-provider) recovery-model' "$FAKE_TMUX_DIR/footer" \
     || fail "the fake footer never showed the switched model: $(cat "$FAKE_TMUX_DIR/footer")"
   expect_out "switched"
   expect_not_out "already on fallback"
@@ -497,7 +501,7 @@ t_req15_rejected_thinking_degrades_to_model_recovery() {
   export SUB_FALLBACK_THINKING=max
   run_fallback "$TASK"
   expect_rc0
-  grep -q -- '-l /model opencode-go/mimo-v2.6-flash' "$FAKE_TMUX_DIR/log" \
+  grep -q -- '-l /model fixture-provider/recovery-model' "$FAKE_TMUX_DIR/log" \
     || fail "the model switch was not sent: $(cat "$FAKE_TMUX_DIR/log")"
   grep -q -- '-l /thinking max' "$FAKE_TMUX_DIR/log" \
     || fail "the configured level was never attempted: $(cat "$FAKE_TMUX_DIR/log")"
@@ -512,7 +516,7 @@ t_req15_rejected_thinking_degrades_to_model_recovery() {
     || fail "the rejected /thinking was nudged in a loop: $(cat "$FAKE_TMUX_DIR/log")"
   grep -q -- ' C-u' "$FAKE_TMUX_DIR/log" \
     || fail "the composer must be cleared after the rejection"
-  grep -qF -- '(opencode-go) mimo-v2.6-flash • high' "$FAKE_TMUX_DIR/footer" \
+  grep -qF -- '(fixture-provider) recovery-model • high' "$FAKE_TMUX_DIR/footer" \
     || fail "the child must end on the switched model: $(cat "$FAKE_TMUX_DIR/footer")"
 }
 
@@ -530,9 +534,9 @@ t_req17_free_tier_error_detected() {
   # End to end: the helper must switch instead of no-op'ing.
   run_fallback "$TASK"
   expect_rc0
-  grep -q -- '-l /model opencode-go/mimo-v2.6-flash' "$FAKE_TMUX_DIR/log" \
+  grep -q -- '-l /model fixture-provider/recovery-model' "$FAKE_TMUX_DIR/log" \
     || fail "the FreeTierError failure was not recovered: $(cat "$FAKE_TMUX_DIR/log")"
-  grep -qF -- '(opencode-go) mimo-v2.6-flash' "$FAKE_TMUX_DIR/footer" \
+  grep -qF -- '(fixture-provider) recovery-model' "$FAKE_TMUX_DIR/footer" \
     || fail "the fake footer never showed the switched model: $(cat "$FAKE_TMUX_DIR/footer")"
   expect_out "switched"
   # A healthy pane still reports no failure (never speculative).

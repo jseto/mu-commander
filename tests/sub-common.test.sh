@@ -420,7 +420,10 @@ run_send() { # <text> [mode] [layout] [attempts] [settle] [expectation]
 # The launch line sub-spawn.sh types: a pi command whose kickoff argument is
 # shell-escaped, so the probe the old helper built could never appear in what
 # pi renders.
-LAUNCH_LINE='pi -n demo --no-extensions --approve Read\ the\ brief\ at\ /main/tmp/pi-sub/tasks/demo.md\ and\ finish.\ Report\ with\ sub-report.sh\ demo\ \"DONE:\ \<one-line\ summary\>\ \(PR\ #...\)\"'
+# It carries option words like every real launch line does (the resolved
+# level mapping — here a neutral fixture value, since tests never pin a
+# shipped model id or thinking level).
+LAUNCH_LINE='pi -n demo --no-extensions --model fixture/launch-model --thinking fixture-level --approve Read\ the\ brief\ at\ /main/tmp/pi-sub/tasks/demo.md\ and\ finish.\ Report\ with\ sub-report.sh\ demo\ \"DONE:\ \<one-line\ summary\>\ \(PR\ #...\)\"'
 # The message pi received as its initial one: the kickoff, backslashes stripped,
 # and nothing of the `pi -n demo …` command that carried it.
 export FAKE_TMUX_TRANSCRIPT='Read the brief at /main/tmp/pi-sub/tasks/demo.md and finish. Report with sub-report.sh demo "DONE: <one-line summary> (PR #...)"'
