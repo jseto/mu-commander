@@ -34,14 +34,40 @@ ROOT=$(repo_root "$REPO")
 SESS=$(session_of "$TASK")
 
 cd "$ROOT"
-WT=$(wt_for_task "$TASK" "$ROOT")
-[ -n "$WT" ] || die "no worktree leased for '$TASK' (in $ROOT)"
-# Capture the task branch before 'treehouse return' detaches the worktree HEAD.
-BRANCH=$(git -C "$WT" branch --show-current 2>/dev/null || true)
-# The base the task is compared against, resolved through the shared helper so
-# a repository that deleted $DEV_BRANCH still retires (loudly if none exists).
-BASE_REF=$(resolve_base_ref "$WT")
-BASE_BRANCH=${BASE_REF#origin/}
+# [REQ-4] Read status directly so a broken status command or malformed
+# response cannot be mistaken for a missing lease. wt_for_task intentionally
+# collapses those cases for best-effort lookups; retirement must distinguish them.
+if ! TREEHOUSE_STATUS=$(treehouse status --json 2>/dev/null); then
+  die "could not read treehouse status in $ROOT"
+fi
+if ! jq -e 'type == "array" and all(.[]; type == "object" and (.lease_holder | type == "string") and (.path | type == "string"))' <<<"$TREEHOUSE_STATUS" >/dev/null; then
+  die "invalid treehouse status JSON in $ROOT"
+fi
+if jq -e --arg h "$TASK" 'any(.[]; .lease_holder == $h)' <<<"$TREEHOUSE_STATUS" >/dev/null; then
+  WT=$(jq -r --arg h "$TASK" '[.[] | select(.lease_holder == $h) | .path][0] // empty' <<<"$TREEHOUSE_STATUS")
+  [ -n "$WT" ] || die "worktree lease for '$TASK' has no path in treehouse status (in $ROOT)"
+  MISSING_LEASE=0
+else
+  WT=""
+  MISSING_LEASE=1
+fi
+# [REQ-1] Missing lease is fail-closed unless the operator explicitly forces recovery.
+if [ "$MISSING_LEASE" = 1 ]; then
+  if [ "$FORCE" != 1 ]; then
+    die "no worktree leased for '$TASK' (in $ROOT); verify all work is published, then retry with --force to retire the child without returning a worktree"
+  fi
+  warn "no worktree leased for '$TASK' (in $ROOT); --force will not return a worktree or clean task branches"
+  BRANCH=""
+  BASE_REF=""
+  BASE_BRANCH=""
+else
+  # Capture the task branch before 'treehouse return' detaches the worktree HEAD.
+  BRANCH=$(git -C "$WT" branch --show-current 2>/dev/null || true)
+  # The base the task is compared against, resolved through the shared helper
+  # so a repository that deleted $DEV_BRANCH still retires (loudly if none exists).
+  BASE_REF=$(resolve_base_ref "$WT")
+  BASE_BRANCH=${BASE_REF#origin/}
+fi
 
 # A branch is "published" (safe to retire) when its tip is already reachable
 # from a remote branch, i.e. the task branch was pushed for a PR or the work
@@ -203,11 +229,16 @@ else
   info "tmux session $SESS not running"
 fi
 
-treehouse return --force "$WT"
-info "returned worktree $WT"
+# [REQ-2] Never return or infer a worktree when the lease/path is unknown.
+if [ "$MISSING_LEASE" = 1 ]; then
+  info "skipped treehouse return; no worktree lease exists for '$TASK'"
+else
+  treehouse return --force "$WT"
+  info "returned worktree $WT"
+fi
 
-# Drop the scratch brief/report/patch now that the worktree is gone; the pushed
-# branch/PR is the durable copy. Use --keep-files to retain them.
+# Drop the scratch brief/report/patch now that retirement succeeded; the
+# pushed branch/PR is the durable copy. Use --keep-files to retain them [REQ-3].
 if [ "$KEEP_FILES" != 1 ]; then
   removed=0
   agent_dir="$(scratch_root "$ROOT")/agent-dirs/$TASK"
@@ -231,7 +262,12 @@ fi
 
 # Best-effort branch cleanup after a successful retirement (REQ-1..REQ-6).
 if [ "$CLEANUP" = 1 ]; then
-  cleanup_branches "$BRANCH" || true
+  # [REQ-2] Branch cleanup is unsafe without the task's worktree branch.
+  if [ "$MISSING_LEASE" = 1 ]; then
+    info "branch cleanup skipped; no worktree branch is available for '$TASK'"
+  else
+    cleanup_branches "$BRANCH" || true
+  fi
 else
   info "branch cleanup skipped (--no-branch-cleanup)"
 fi

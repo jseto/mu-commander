@@ -86,6 +86,8 @@ treehouse destroy           # remove worktrees from the pool (safely by default)
 
 - `get` acquires, fetches, and resets; `enter` only cd's in and leaves all pool
   state untouched — use it to attach to a worktree another agent is using.
+- `status` can reconcile missing worktree paths and rewrite `treehouse-state.json`
+  while listing the pool; it is not a no-write forensic inspection command.
 - `return --force` cleans and resets without prompting.
 
 ### Base branch: `development` when it exists, else the default branch
@@ -263,7 +265,7 @@ SCRIPTS=/home/jseto/programming-projects/mu-commander/scripts
 | `sub-send.sh <task> "message"` | Send a literal follow-up instruction to an existing child pi session and confirm it was submitted (re-types/retries `Enter` via `tmux_send_line`) |
 | `sub-report.sh <task> "message"` | Push a `[task] message` notice into `$MAIN_SESSION` (used by children) |
 | `sub-land.sh <task> [repo] [--patch]` | Read-only: what would be lost, commits to publish, push + `gh pr create` commands; `--patch` exports the work to `tmp/pi-sub/reports/<task>.patch` |
-| `sub-retire.sh <task> [repo] [--force] [--keep-files] [--no-branch-cleanup]` | Kill `pi-<task>`, `treehouse return --force`, delete the task's scratch brief/report/patch, best-effort clean up the task's merged local/remote branches (`--no-branch-cleanup` skips that), and append a conversation-log entry recording the retirement with the child's session cost; **refuses** when uncommitted or unpublished work would be destroyed (overridable with `--force`; `--keep-files` retains the scratch docs) |
+| `sub-retire.sh <task> [repo] [--force] [--keep-files] [--no-branch-cleanup]` | Kill `pi-<task>`, return a leased worktree, delete the task's scratch brief/report/patch, best-effort clean up merged local/remote branches (`--no-branch-cleanup` skips that), and log retirement with the child's session cost; refuses when work may be lost (overridable with `--force`; if the lease is missing, `--force` stops the child but skips worktree return and branch cleanup; `--keep-files` retains scratch docs) |
 | `sub-clean.sh [repo] [--yes]` | Sweep scratch docs for tasks with no lease and no running tmux session (dry-run unless `--yes`) |
 | `conversation-log.sh append <kind> <message>` | Append one entry to the weekly conversation/operation log in gitignored `logs/conversations/` (6-month retention sweep runs on every call; **logs are only read to resolve operational issues** — never during normal operation); kinds: `prompt`, `reply`, `child-out`, `child-in`, `operation` — see *Conversation logging* |
 | `start-main.sh [--detach\|-d]` | Start the orchestrator's main pi session in tmux `pi-main` (name follows `$MAIN_SESSION`): create it detached at the main checkout of this repo, launch plain `$PI_BIN` (default `pi`, no child flags, submission verified via `tmux_send_line`), set the `main-pane-width 50%` / `main-vertical` convention, then attach — `--detach`/`-d` only starts or points at it; an existing session is reported (name + cwd) and re-attached, never restarted |
@@ -645,6 +647,19 @@ retiring earlier strands review follow-ups. Before disposing of or retiring
 any child, check whether its worktree has uncommitted, unpublished, or
 otherwise potentially lost changes. Notify the user if any such changes
 exist, and require the user's confirmation before force-discarding them.
+
+**Do not merge a child PR with `gh pr merge --delete-branch` while its treehouse
+worktree is live.** In the installed `gh` 2.101.0, this option removes the
+linked worktree containing the PR's local branch (`git worktree remove`) before
+deleting that branch; the child session can remain alive with its directory
+gone, and the next `treehouse status` drops the stale lease record. Merge
+without `--delete-branch`, then retire the child so `sub-retire.sh` can return
+the worktree. The repository's `delete_branch_on_merge` setting already
+removes the remote head branch. If the lease has already disappeared, use
+`sub-retire.sh <task> <repo> --force` only after verifying the work is durable;
+that recovery stops the child and handles scratch files, but deliberately does
+not return an unknown worktree or delete an unknown branch.
+
 A **squash merge** makes `sub-retire.sh` see the branch as "not merged" even
 though everything is published: verify content is fully in `origin/development`
 with `git diff origin/development..<branch>` (empty diff = nothing lost), then
@@ -679,13 +694,16 @@ automatically on merge (`delete_branch_on_merge` is enabled for this repo).
 
 **Merging a PR also deletes its associated local branch** (user directive,
 2026-10-03): whenever you merge a PR yourself — the *merge on request*
-housekeeping step, `gh pr merge <n> --squash` and friends — finish the job in
-the same step by pulling the dev base and deleting the PR's local branch from
-the main checkout: `git branch -D <branch>`. Before deleting, confirm nothing
-would be lost with `git diff origin/<dev-base>..<branch>` (empty = safe; a
-squash merge makes plain `-d` refuse, hence `-D`). When the diff is not empty,
-keep the branch and warn instead. Remote heads are GitHub's business
-(`delete_branch_on_merge`), the local branch is yours.
+housekeeping step — pull the dev base and delete the PR's local branch only
+after confirming nothing would be lost with
+`git diff origin/<dev-base>..<branch>` (empty = safe; a squash merge makes
+plain `-d` refuse, hence `-D`). If a child worktree still has that branch
+checked out, first retire the child with `sub-retire.sh` and do not use
+`gh pr merge --delete-branch`; that option can remove the linked worktree
+before the child is retired. Then delete any safe leftover local branch from
+the main checkout. When the diff is not empty, keep the branch and warn
+instead. Remote heads are GitHub's business (`delete_branch_on_merge`), the
+local branch is yours.
 
 Every successful retirement also appends an `operation` entry to the
 conversation log (`retired <task> | session cost: $0.1234`), with the cost
