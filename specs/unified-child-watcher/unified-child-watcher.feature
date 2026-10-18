@@ -158,3 +158,19 @@ Feature: One watcher per child for every watching service
       scripts/sub-lavish-watch.sh, scripts/sub-pr-watch.sh, and
       scripts/sub-spawn.sh are checked with shellcheck and bash -n
     Then all report no findings
+
+  Scenario: A reply-only COMMENTED review is never routed back [REQ-21]
+    Given a child whose PR carries a submitted COMMENTED review and the
+      child's own reply recorded as a reply-only COMMENTED review
+    When the watcher scans
+    Then only the submitted review is notified
+    And the reply-only review is recorded handled and never notified
+
+  Scenario: An unreadable review defers only that review [REQ-22]
+    Given a child whose PR carries a COMMENTED review whose review-comment
+      read fails
+    And the same PR carries a later review that needs no attribution read
+    When the watcher scans
+    Then the later review is still notified
+    And the unreadable review is retried on a later scan
+    And no notice is sent from the unreadable review's data

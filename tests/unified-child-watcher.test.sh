@@ -158,6 +158,7 @@ case "${1:-}" in
           case "$1" in id=*) id=${1#id=} ;; esac
           shift
         done
+        [ -n "${FAKE_GH_GRAPHQL_FAIL:-}" ] && [ -e "$FAKE_GH_GRAPHQL_FAIL" ] && exit 1
         jq -r --arg id "$id" '.[$id] // 1' "${FAKE_GH_GRAPHQL_STATE:?FAKE_GH_GRAPHQL_STATE not set}"
         exit 0 ;;
     esac ;;
@@ -269,13 +270,14 @@ new_watch_case() { # $1=unique case id
   GH_FAIL="$CASE/gh-fail"
   GH_GRAPHQL_STATE="$CASE/review-comments.json"
   printf '{}\n' > "$GH_GRAPHQL_STATE"
+  GH_GRAPHQL_FAIL="$CASE/gh-graphql-fail"
   TH_STATE="$CASE/leases.json"
   TH_FAIL="$CASE/th-fail"
   printf '[{"path":"%s","lease_holder":"%s"}]\n' "$WT" "$TASK" > "$TH_STATE"
   GIT_LOG="$CASE/git.log"
   : > "$GIT_LOG"
   AXI_CALLS="$CASE/axi-calls"
-  unset SERVICES INTERVAL RETRY REWAKE MARGIN L_TICKS P_TICKS S_TICKS 2>/dev/null || true
+  unset SERVICES INTERVAL RETRY REWAKE MARGIN L_TICKS P_TICKS S_TICKS SCAN_LINES 2>/dev/null || true
 }
 
 run_watcher() {
@@ -297,11 +299,13 @@ run_watcher() {
         STALL_WATCH_RETRY_SECONDS="${RETRY:-0}" \
         STALL_WATCH_REWAKE_SECONDS="${REWAKE:-9999}" \
         STALL_WATCH_TICKS="${S_TICKS:-2}" \
+        STALL_WATCH_SCAN_LINES="${SCAN_LINES:-50}" \
         FAKE_TMUX_DIR="$TMUX_DIR" \
         FAKE_GH_STATE="$GH_STATE" \
         FAKE_GH_LOG="$GH_LOG" \
         FAKE_GH_FAIL="$GH_FAIL" \
         FAKE_GH_GRAPHQL_STATE="$GH_GRAPHQL_STATE" \
+        FAKE_GH_GRAPHQL_FAIL="$GH_GRAPHQL_FAIL" \
         FAKE_TREEHOUSE_STATE="$TH_STATE" \
         FAKE_TREEHOUSE_FAIL="$TH_FAIL" \
         FAKE_WT="$WT" \
@@ -654,6 +658,102 @@ t_req17_cleared_failure_notifies_again() {
   [ "$(stall_epoch_count)" -ge 2 ] || fail "two distinct notices expected: $TLOG"
 }
 
+t_req21_reply_only_commented_review_is_never_routed() {
+  jq_ok || return 0
+  new_watch_case reply-only
+  write_pr "$GH_STATE" 41 OPEN "$BRANCH" \
+    "$(reviews_json \
+        "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z '' PRR_human)" \
+        "$(review_json jseto COMMENTED 2026-10-18T18:04:27Z '' PRR_child)")"
+  printf '{"PRR_child":0}\n' > "$GH_GRAPHQL_STATE"
+  SERVICES=pr; P_TICKS=3
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 1 ] || fail "only the submitted review may be notified: $OUT"
+  grep -qF 'got a COMMENTED review from jseto' <<<"$MAIN_PANE_TEXT" \
+    || fail "the submitted review must be notified: $MAIN_PANE_TEXT"
+  grep -qF 'is a reply to an existing thread; not notifying' <<<"$OUT" \
+    || fail "the reply-only review must be recorded handled: $OUT"
+  [ "$(grep -cF 'got a COMMENTED review' <<<"$MAIN_PANE_TEXT")" -eq 1 ] \
+    || fail "the reply must never be notified: $MAIN_PANE_TEXT"
+}
+
+t_req22_unreadable_review_defers_only_itself() {
+  jq_ok || return 0
+  new_watch_case unreadable-review
+  write_pr "$GH_STATE" 42 OPEN "$BRANCH" \
+    "$(reviews_json \
+        "$(review_json carol COMMENTED 2026-10-18T10:00:00Z '' PRR_unreadable)" \
+        "$(review_json bob APPROVED 2026-10-18T10:05:00Z)")"
+  : > "$GH_GRAPHQL_FAIL"
+  (
+    sleep 0.5
+    rm -f "$GH_GRAPHQL_FAIL"
+    printf '{"PRR_unreadable":1}\n' > "$GH_GRAPHQL_STATE"
+  ) &
+  local mutator=$!
+  SERVICES=pr; P_TICKS=8; INTERVAL=0.2; RETRY=0
+  run_watcher
+  wait "$mutator" 2>/dev/null || true
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF 'could not read the review comments' <<<"$ERR" \
+    || fail "an unreadable attribution must warn: $ERR"
+  [ "$(delivered_count)" -eq 2 ] \
+    || fail "the later review and the recovered one must both be notified: $OUT"
+  grep -qF 'got a APPROVED review from bob' <<<"$MAIN_PANE_TEXT" \
+    || fail "the later review must not be starved: $MAIN_PANE_TEXT"
+  grep -qF 'got a COMMENTED review from carol' <<<"$MAIN_PANE_TEXT" \
+    || fail "the unreadable review must be notified once its read recovers: $MAIN_PANE_TEXT"
+}
+
+# ---------------------------------------------------------------------------
+# Supplementary tests (edges the [REQ-n] scenarios do not pin)
+# ---------------------------------------------------------------------------
+
+t_supp_stall_scan_window_knob_is_honoured() {
+  jq_ok || return 0
+  local i
+  new_watch_case stall-scan-window-small
+  {
+    printf '%s\n' "$FAILURE_TEXT"
+    for (( i = 1; i <= 20; i++ )); do printf 'filler line %s\n' "$i"; done
+  } > "$TMUX_DIR/panes/$SESS"
+  SERVICES=stall; S_TICKS=1; SCAN_LINES=5
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF 'STUCK:' <<<"$MAIN_PANE_TEXT" \
+    && fail "the failure sits outside the 5-line window: $MAIN_PANE_TEXT"
+
+  new_watch_case stall-scan-window-default
+  {
+    printf '%s\n' "$FAILURE_TEXT"
+    for (( i = 1; i <= 20; i++ )); do printf 'filler line %s\n' "$i"; done
+  } > "$TMUX_DIR/panes/$SESS"
+  SERVICES=stall; S_TICKS=1; SCAN_LINES=50
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF 'STUCK:' <<<"$MAIN_PANE_TEXT" \
+    || fail "the default window must find the failure: $MAIN_PANE_TEXT"
+  return 0
+}
+
+t_supp_lease_returned_mid_run_stops_the_watcher() {
+  jq_ok || return 0
+  new_watch_case lease-vanished
+  (
+    sleep 0.4
+    printf '[]\n' > "$TH_STATE"
+  ) &
+  local mutator=$!
+  SERVICES=pr; P_TICKS=10; INTERVAL=0.2
+  run_watcher
+  wait "$mutator" 2>/dev/null || true
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF "no worktree lease for '$TASK'" <<<"$OUT" \
+    || fail "the vanished lease must stop the watcher: $OUT"
+  [ "$(gh_list_count)" -ge 1 ] || fail "the watcher must have scanned at least once: $GHLOG"
+}
+
 # ---------------------------------------------------------------------------
 # Scenarios: the spawn wiring (real sub-spawn.sh, fake treehouse/tmux)
 # ---------------------------------------------------------------------------
@@ -696,6 +796,7 @@ run_spawn() { # $1=fixture-dir [$2=no-pr-watch|no-watch]
   case $mode in
     no-pr-watch) envs+=(SUB_SPAWN_NO_PR_WATCH=1) ;;
     no-watch)    envs+=(SUB_SPAWN_NO_WATCH=1) ;;
+    no-services) envs+=(SUB_SPAWN_NO_PR_WATCH=1 SUB_WATCH_SERVICES=pr) ;;
   esac
   RC=0
   OUT=$("${envs[@]}" bash "$SPAWN" "$TASK" "$fx/repo" 2>"$fx/spawn-stderr") || RC=$?
@@ -756,6 +857,18 @@ t_req20_touched_scripts_shellcheck_clean() {
     "$ROOT/scripts/sub-spawn.sh" || fail "shellcheck reported findings"
 }
 
+t_supp_no_services_selection_arms_no_window() {
+  jq_ok || return 0
+  local fx="$SCRATCH/spawn-no-services"
+  make_spawn_fixture "$fx"
+  run_spawn "$fx" no-services
+  [ "$RC" -eq 0 ] || fail "spawn exit=$RC stderr=$ERR"
+  grep -qE -- '-n watch( |$)' <<<"$TLOG" \
+    && fail "no window may be created with no service selected: $TLOG"
+  grep -qF 'watch:    disabled (no service selected)' <<<"$OUT" \
+    || fail "the handles must report the empty selection: $OUT"
+}
+
 run() {
   local name=$1 fn=$2 out
   if out=$( "$fn" 2>&1 ); then
@@ -788,6 +901,11 @@ run "[REQ-17] cleared failure notifies again"                        t_req17_cle
 run "[REQ-18] spawn knobs disable the watcher or the PR service"     t_req18_spawn_knobs_disable_the_watcher_or_the_pr_service
 run "[REQ-19] unstartable watch window does not fail spawn"          t_req19_unstartable_watch_window_does_not_fail_spawn
 run "[REQ-20] touched scripts shellcheck-clean"                      t_req20_touched_scripts_shellcheck_clean
+run "[REQ-21] reply-only COMMENTED review is never routed"          t_req21_reply_only_commented_review_is_never_routed
+run "[REQ-22] unreadable review defers only itself"                 t_req22_unreadable_review_defers_only_itself
+run "supplementary: stall scan window knob is honoured"             t_supp_stall_scan_window_knob_is_honoured
+run "supplementary: lease returned mid-run stops the watcher"       t_supp_lease_returned_mid_run_stops_the_watcher
+run "supplementary: no service selected arms no window"             t_supp_no_services_selection_arms_no_window
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"

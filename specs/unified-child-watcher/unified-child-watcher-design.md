@@ -52,13 +52,15 @@ is the old loop body verbatim.
   - **PR service** — `lease_state`, `lease_alive`, `read_pr`,
     `review_signature`, `review_disposition`, `new_epoch`,
     `compose_terminal_notice`, `compose_review_notice` and `pr_tick`,
-    lifted from `sub-pr-watch.sh` including the in-flight fixes: a
+    lifted from `sub-pr-watch.sh` including its landed fixes: a
     `COMMENTED` review whose only comments are replies is the child's own
     words (`review_disposition` → `self-reply`, recorded handled), an
-    unreadable attribution is retried, and a queued (steering) notice is
-    delivery because `_sub-common.sh`'s `tmux_send_line` recognises pi's
-    pending display. `pr_tick` marks the service done after the confirmed
-    terminal notice.
+    unreadable attribution is retried **only for its own review** (the
+    per-signature `PR_REVIEW_RETRY_AFTER` map, so a poisoned read never
+    starves the later reviews of the same scan), and a queued (steering)
+    notice counts as delivery because `_sub-common.sh`'s `tmux_send_line`
+    recognises pi's pending display (`fix-pending-notice`).
+    `pr_tick` marks the service done after the confirmed terminal notice.
   - **Stall service** — `stall_scan` (calls `pane_has_free_limit_error`,
     then classifies the signature), `compose_stall_notice`, `new_stall_epoch`
     and `stall_tick`: notify-only, dedupe per failure signature (kind +
@@ -86,7 +88,8 @@ is the old loop body verbatim.
 - [`scripts/_sub-common.sh`](file://scripts/_sub-common.sh) **(unchanged)** —
   `repo_root`, `session_of`, `wt_for_task`, `pane_tail`,
   `pane_has_free_limit_error`, `_FALLBACK_ERROR_RE`, `info`/`warn`/`die` are
-  reused; the pending-notice fix from the in-flight PR lives here.
+  reused; the landed pending-notice handling (`fix-pending-notice`) lives
+  here and `tmux_send_line` is the one send path.
 - [`specs/lavish-wake/`](file://specs/lavish-wake/) and
   [`specs/pr-action-watch/`](file://specs/pr-action-watch/) **(modified)** —
   their spawn-wiring scenarios point at the unified watcher.
@@ -120,9 +123,12 @@ Loop decision order (each iteration):
 
 ```
 session gone?                     -> report and exit 0
-pr active and lease gone?         -> report and exit 0
-lease read failed?                -> warn once, keep watching
 for each active service, if due:
+    pr service only: lease check  -> gone: report and exit 0
+                                     unknown: warn once, keep watching
+                                     (at the PR cadence: treehouse status is
+                                      not read-only, so the unified loop
+                                      must not probe it every Lavish tick)
     tick; a confirmed terminal PR notice marks only that service done
     *_TICKS bound reached?        -> mark only that service done
 all active services done?         -> exit 0
@@ -145,7 +151,7 @@ sleep smallest active interval
 ## Best practices taken
 
 - **Reuse over rewrite**: each service tick is the old loop body; the PR
-  service carries the in-flight dedupe fixes (self-reply attribution,
+  service carries the landed dedupe fixes (self-reply attribution,
   unreadable-review retry, queued-notice confirmation in `_sub-common.sh`).
 - **One clock, per-service periods**: the engine's loop sleeps the smallest
   active interval and runs each service every `ceil(interval / sleep)` ticks,
@@ -172,4 +178,10 @@ code where three `sleep` loops were trivial; and the service-selection knob
 honest. The mitigation for the first is that every tick catches its own
 transient failures (unreadable state/PR/lease warn and continue) exactly as
 before, and the whole watcher is best-effort by contract: a dead watcher
-window only loses automatic watching, never the child.
+window only loses automatic watching, never the child. The stall detector is
+deliberately textual (the pane is the only channel into a running TUI), so a
+child that merely *quotes* the failure signature can produce a false `STUCK:`
+notice; notify-only is the mitigation (the orchestrator re-checks, and
+`sub-fallback.sh` re-gates on the same pane), and a structured detector (the
+session JSONL's last `stopReason: "error"`) is the documented follow-up
+(`tmp/pi-sub/reports/fallback-auto-gap.md` §4).

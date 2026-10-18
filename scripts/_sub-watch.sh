@@ -23,9 +23,10 @@ if [ -z "$_SUB_WATCH_DIR" ] || [ "$_SUB_WATCH_DIR" = "${BASH_SOURCE[0]}" ]; then
   _SUB_WATCH_DIR=.
 fi
 
-# Pane window searched for the free-provider signature (the same knob name
-# sub-fallback.sh uses).
-: "${STALL_SCAN_LINES:=50}"
+# Pane window searched for the free-provider signature. Deliberately the
+# STALL_WATCH_* family's own knob (sub-fallback.sh's FALLBACK_SCAN_LINES is
+# its separate operator surface).
+: "${STALL_WATCH_SCAN_LINES:=50}"
 
 # ---------------------------------------------------------------------------
 # Engine state
@@ -33,7 +34,7 @@ fi
 
 W_TASK='' W_ROOT='' W_SESS='' W_WT='' W_BRANCH=''
 W_SERVICES=()
-W_NEED_LEASE=0 W_LEASE_WARNED=0 W_TICK_DONE=0
+W_LEASE_WARNED=0 W_TICK_DONE=0
 declare -A W_INTERVAL_MS=() W_PERIOD=() W_BOUND=() W_RAN=() W_DONE=()
 declare -A W_RETRY=() W_REWAKE=()
 
@@ -323,6 +324,10 @@ lavish_tick() {
 # ---------------------------------------------------------------------------
 
 declare -A PR_SEEN_REVIEWS=()
+# sig -> epoch before which an unreadable attribution read is not repeated:
+# a poisoned read defers only its own review, never the later reviews of the
+# same scan (they need no attribution read at all).
+declare -A PR_REVIEW_RETRY_AFTER=()
 PR_NEXT_ATTEMPT=0 PR_WARNED_READ=0 PR_WARNED_REVIEW=0
 
 # Lease state for a task in a treehouse status document: alive | gone |
@@ -486,6 +491,7 @@ compose_review_notice() { # $1=task $2=number $3=url $4=login $5=state $6=epoch
 
 pr_init() {
   PR_SEEN_REVIEWS=()
+  PR_REVIEW_RETRY_AFTER=()
   PR_NEXT_ATTEMPT=0
   PR_WARNED_READ=0
   PR_WARNED_REVIEW=0
@@ -540,12 +546,14 @@ pr_tick() {
     if [ -n "${PR_SEEN_REVIEWS[$sig]:-}" ]; then continue; fi
     now=$(date +%s)
     if [ "$now" -lt "$PR_NEXT_ATTEMPT" ]; then break; fi
+    if [ "${PR_REVIEW_RETRY_AFTER[$sig]:-0}" -gt "$now" ]; then continue; fi
     # A COMMENTED review that is only a reply to an existing thread is the
     # child's own words (or any in-thread reply): nothing to route, and
     # notifying it would loop the child back onto itself. Record it handled
     # so later scans neither notify nor re-read it. An unreadable
-    # attribution is never a notice and stays unrecorded, to be retried like
-    # any other failed read.
+    # attribution is never a notice and stays unrecorded; it is retried
+    # after the retry delay, and only it — a poisoned read must not stop the
+    # later reviews of the same scan from being notified.
     disposition=$(review_disposition "$review" "$W_ROOT")
     case $disposition in
       self-reply)
@@ -559,8 +567,8 @@ pr_tick() {
           warn "could not read the review comments for '$W_TASK'; will retry"
           PR_WARNED_REVIEW=1
         fi
-        PR_NEXT_ATTEMPT=$(( now + W_RETRY[pr] ))
-        break ;;
+        PR_REVIEW_RETRY_AFTER[$sig]=$(( now + W_RETRY[pr] ))
+        continue ;;
       *)
         PR_WARNED_REVIEW=0 ;;
     esac
@@ -596,8 +604,8 @@ stall_scan() {
   local text
   STALL_KIND=''
   STALL_COUNT=0
-  pane_has_free_limit_error "$W_TASK" "${STALL_SCAN_LINES:-50}" || return 0
-  text=$(pane_tail "$W_TASK" "${STALL_SCAN_LINES:-50}")
+  pane_has_free_limit_error "$W_TASK" "${STALL_WATCH_SCAN_LINES:-50}" || return 0
+  text=$(pane_tail "$W_TASK" "${STALL_WATCH_SCAN_LINES:-50}")
   # The pane can change between the detection read and this one; a failure
   # that vanished in between is a cleared incident, never a notice composed
   # from the fallback kind.
@@ -699,9 +707,6 @@ watch_engine() {
     need git treehouse jq
   fi
 
-  W_NEED_LEASE=0
-  if watch_service_active pr; then W_NEED_LEASE=1; fi
-
   wt=$(wt_for_task "$task" "$root")
   W_WT=$wt
   # The Lavish artifacts live under the child's leased worktree, so that
@@ -762,24 +767,26 @@ watch_engine() {
       return 0
     fi
     # A returned lease means the worktree is gone; a failed read is
-    # transient and only warns once (the PR service's lifetime rule).
-    if [ "$W_NEED_LEASE" = 1 ]; then
-      case $(lease_alive "$task" "$root") in
-        gone)
-          info "no worktree lease for '$task'; watcher stopping"
-          return 0 ;;
-        unknown)
-          if [ "$W_LEASE_WARNED" = 0 ]; then
-            warn "could not read treehouse status in $root; will keep watching"
-            W_LEASE_WARNED=1
-          fi ;;
-        alive) W_LEASE_WARNED=0 ;;
-      esac
-    fi
-
+    # transient and only warns once. The probe runs at the PR service's
+    # cadence, not the loop's: treehouse status is not read-only (it
+    # reconciles missing worktree paths and may rewrite its state file), and
+    # the PR service is the one whose lifetime rule the lease is.
     for svc in ${W_SERVICES[@]+"${W_SERVICES[@]}"}; do
       [ "${W_DONE[$svc]}" = 1 ] && continue
       if [ $(( tick % ${W_PERIOD[$svc]} )) -ne 0 ]; then continue; fi
+      if [ "$svc" = pr ]; then
+        case $(lease_alive "$task" "$root") in
+          gone)
+            info "no worktree lease for '$task'; watcher stopping"
+            return 0 ;;
+          unknown)
+            if [ "$W_LEASE_WARNED" = 0 ]; then
+              warn "could not read treehouse status in $root; will keep watching"
+              W_LEASE_WARNED=1
+            fi ;;
+          alive) W_LEASE_WARNED=0 ;;
+        esac
+      fi
       W_TICK_DONE=0
       watch_service_tick "$svc"
       W_RAN[$svc]=$(( W_RAN[$svc] + 1 ))

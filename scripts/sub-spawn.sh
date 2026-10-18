@@ -212,20 +212,25 @@ else
   if [ "${SUB_SPAWN_NO_PR_WATCH:-0}" = 1 ]; then
     # Remove the `pr` token from the comma-separated selection; duplicates
     # and empty tokens are the watcher's business, so a plain token filter
-    # is enough (and an empty result is reported as "none").
+    # is enough.
     WATCH_SERVICES=",${WATCH_SERVICES//[[:space:]]/},"
     WATCH_SERVICES=${WATCH_SERVICES//,pr,/,,}
     while [[ $WATCH_SERVICES == *,,* ]]; do WATCH_SERVICES=${WATCH_SERVICES//,,/,}; done
     WATCH_SERVICES=${WATCH_SERVICES#,}
     WATCH_SERVICES=${WATCH_SERVICES%,}
   fi
-  WATCH_CMD=$(printf 'exec env SUB_WATCH_SERVICES=%q %q %q %q %q' \
-    "$WATCH_SERVICES" "$SCRIPT_DIR/sub-watch.sh" "$TASK" "$ROOT" "$BRANCH")
-  if tmux new-window -d -t "=$SESS:" -n watch -c "$WT" "$WATCH_CMD" >/dev/null 2>&1; then
-    WATCH_STATE="watch window in $SESS (services: ${WATCH_SERVICES:-none})"
+  if [ -z "$WATCH_SERVICES" ]; then
+    # Nothing left to watch: don't arm a window that would exit immediately.
+    WATCH_STATE="disabled (no service selected)"
   else
-    WATCH_STATE="unavailable"
-    warn "could not create the watch window in $SESS — the child's watching services will not run automatically"
+    WATCH_CMD=$(printf 'exec env SUB_WATCH_SERVICES=%q %q %q %q %q' \
+      "$WATCH_SERVICES" "$SCRIPT_DIR/sub-watch.sh" "$TASK" "$ROOT" "$BRANCH")
+    if tmux new-window -d -t "=$SESS:" -n watch -c "$WT" "$WATCH_CMD" >/dev/null 2>&1; then
+      WATCH_STATE="watch window in $SESS (services: ${WATCH_SERVICES:-none})"
+    else
+      WATCH_STATE="unavailable"
+      warn "could not create the watch window in $SESS — the child's watching services will not run automatically"
+    fi
   fi
 fi
 
