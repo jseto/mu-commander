@@ -133,7 +133,10 @@ t_req5_missing_config_degrades_to_no_flags() {
 
 t_req6_unknown_level_degrades_to_no_flags() {
   jq_ok || return 0
-  resolve bogus "" ""
+  # The fixture, never the shipped config.json: the warning must come from a
+  # mapping this test owns, so no config.json retune can turn it red (and
+  # invent a level named 'bogus' cannot silently satisfy it).
+  resolve bogus "" "" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE"
   [ "$RC" -eq 0 ] || fail "expected exit 0, got $RC"
   [ -z "$OUT" ] || fail "expected no flags, got: $OUT"
   case $RERR in
