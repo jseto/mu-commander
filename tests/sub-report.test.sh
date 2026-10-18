@@ -52,6 +52,7 @@ mkdir -p "$S"
 [ -f "$S/log" ]      || : > "$S/log"
 [ -f "$S/pane" ]     || : > "$S/pane"
 [ -f "$S/composer" ] || : > "$S/composer"
+[ -f "$S/pending" ]  || : > "$S/pending"
 [ -f "$S/tick" ]     || : > "$S/tick"
 D='────────────────────────────────────────────────────────────────────'
 
@@ -100,11 +101,26 @@ case "${1:-}" in
       redraw)
         n=$(cat "$S/tick")
         printf '#%s' "$(( ${n:-0} + 1 ))" > "$S/tick" ;;
+      steer)
+        # The orchestrator is mid-turn: pi queues the submitted notice as a
+        # steering message and renders it as ONE truncated pending line
+        # (TruncatedText(text, 1, 0)). It never reaches the transcript while
+        # the turn runs.
+        if [ -s "$S/composer" ]; then
+          queued=$(cat "$S/composer")
+          printf '%s...\n' "${queued:0:24}" >> "$S/pending"
+          : > "$S/composer"
+        fi ;;
     esac
     exit 0
     ;;
   capture-pane)
     if [ -s "$S/pane" ]; then cat "$S/pane"; fi
+    if [ -s "$S/pending" ]; then
+      printf '\n'
+      while IFS= read -r q; do printf 'Steering: %s\n' "$q"; done < "$S/pending"
+      printf '↳ Alt+Up to edit all queued messages\n'
+    fi
     printf '\n%s\n' "$D"          # gap + spinner row
     if [ -s "$S/composer" ]; then cat "$S/composer"; printf '\n'; else printf '\n'; fi
     printf '%s\n' "$D"            # status border
@@ -124,6 +140,7 @@ EOS
   : > "$FAKE_TMUX_DIR/pane"
   : > "$FAKE_TMUX_DIR/log"
   : > "$FAKE_TMUX_DIR/composer"
+  : > "$FAKE_TMUX_DIR/pending"
   : > "$FAKE_TMUX_DIR/tick"
   export FAKE_TMUX_MODE=ok
   # Pin the target env: the test shell may inherit MAIN_SESSION/MAIN_PANE
@@ -292,6 +309,23 @@ t_send_req8_success_wording_unchanged() {
   expect_out "instruction sent to $SESS"
 }
 
+# [fix-pending-notice REQ-4] a notice the main session queues behind a
+# running turn is reported delivered, exactly once: the pending display shows
+# the truncated notice and sub-report must not retype or fail it.
+t_pending_req4_queued_notice_reported_delivered_once() {
+  setup
+  add_session main-orch
+  export FAKE_TMUX_MODE=steer
+  local msg='PR #19 (https://github.com/owner/repo/pull/19) got a COMMENTED review from alice - route it to the child with sub-send.sh demo-task. [pr-watch 4242]'
+  run_report "$TASK" "$msg"
+  expect_rc0
+  expect_out "notice delivered"
+  [ "$(count_sent)" -eq 1 ] \
+    || fail "a queued notice must not be retyped: $(cat "$FAKE_TMUX_DIR/log")"
+  [ "$(wc -l < "$FAKE_TMUX_DIR/pending")" -eq 1 ] \
+    || fail "exactly one queued copy expected: $(cat "$FAKE_TMUX_DIR/pending")"
+}
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -317,6 +351,7 @@ run "[REQ-9] shellcheck touched scripts"                      t_req9_shellcheck_
 run "[supp] sub-send unconfirmed instruction fails loudly"    t_supp_sub_send_unconfirmed_is_loud
 run "[fix-send-confirm REQ-2/REQ-5] parked incident never reported" t_send_req2_incident_never_reported_as_sent
 run "[fix-send-confirm REQ-8] success wording unchanged"       t_send_req8_success_wording_unchanged
+run "[fix-pending-notice REQ-4] queued notice reported delivered once" t_pending_req4_queued_notice_reported_delivered_once
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"

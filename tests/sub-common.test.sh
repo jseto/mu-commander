@@ -167,12 +167,14 @@ parse_fixture() {
     printf '%s\n' \"\$_pi_layout\"
     printf '[%s]\n' \"\$_pi_comp\"
     printf '[%s]\n' \"\$_pi_trans\"
-    printf '[%s]\n' \"\$_pi_below\"" <<<"$1")
+    printf '[%s]\n' \"\$_pi_below\"
+    printf '[%s]\n' \"\$_pi_pending\"" <<<"$1")
   mapfile -t F <<<"$out"
   PF_LAYOUT=${F[0]}
   PF_COMP=${F[1]#[}; PF_COMP=${PF_COMP%]}
   PF_TRANS=${F[2]#[}; PF_TRANS=${PF_TRANS%]}
   PF_BELOW=${F[3]#[}; PF_BELOW=${PF_BELOW%]}
+  PF_PENDING=${F[4]#[}; PF_PENDING=${PF_PENDING%]}
 }
 
 t_send_req7_regions_split_recognized_layouts() {
@@ -264,6 +266,29 @@ stats"
   [[ $PF_TRANS != *boxedinstruction* ]] || fail "dashed parked line leaked into transcript: $PF_TRANS"
 }
 
+# [fix-pending-notice REQ-1] pi's pending-message display is its own delivery
+# region: the queued message's head is captured with pi's marker stripped,
+# the block is not composer content, and it never breaks the region split.
+t_pending_req1_parser_extracts_the_pending_region() {
+  parse_fixture "a submitted turn
+
+Steering: [demo] PR #19 (https://github.com/owner/rep
+↳ Alt+Up to edit all queued messages
+── ⠴ Working ──────────
+
+$D68
+/tmp/wt (task/demo)
+stats"
+  [ "$PF_LAYOUT" = 1 ] || fail "pane not recognized (layout=$PF_LAYOUT)"
+  [[ $PF_PENDING == *"[demo]PR#19(https://github.com/owner/rep"* ]] \
+    || fail "the queued message head is not captured: $PF_PENDING"
+  [[ $PF_PENDING != *Steering* ]] || fail "pi's marker must be stripped: $PF_PENDING"
+  [[ $PF_PENDING != *queuedmessages* ]] || fail "the dequeue hint is not a queued message: $PF_PENDING"
+  [[ $PF_COMP != *demo* ]] || fail "a pending line must never be composer content: $PF_COMP"
+  [[ $PF_TRANS != *demo* ]] \
+    || fail "a pending line must never be transcript content: $PF_TRANS"
+}
+
 # Fake-tmux sandbox: a structured pi-TUI pane (transcript / spinner /
 # composer / status border / path / stats) whose behaviour is driven by
 # FAKE_TMUX_MODE — see the fake's header for the modes.
@@ -313,6 +338,7 @@ mkdir -p "$S"
 [ -f "$S/log" ] || : > "$S/log"
 [ -f "$S/transcript" ] || : > "$S/transcript"
 [ -f "$S/composer" ] || : > "$S/composer"
+[ -f "$S/pending" ] || : > "$S/pending"
 [ -f "$S/tick" ] || : > "$S/tick"
 D='────────────────────────────────────────────────────────────────────'
 W='── ⠴ Working ───────────────────────────────────────────────────'
@@ -354,6 +380,22 @@ case "${1:-}" in
           : > "$S/composer"
         fi ;;
       vanish-all) : > "$S/composer" ;;
+      steer)
+        # pi queues the submitted line behind the running turn and renders it
+        # as ONE truncated pending line, exactly like TruncatedText(text,1,0).
+        if [ -s "$S/composer" ]; then
+          queued=$(cat "$S/composer")
+          printf '%s...\n' "${queued:0:24}" >> "$S/pending"
+          : > "$S/composer"
+        fi ;;
+      steer-parked)
+        # The pending display gains a NEW copy while the composer keeps the
+        # text: only the composer guard can keep this from confirming a send
+        # that is still parked.
+        if [ -s "$S/composer" ]; then
+          queued=$(cat "$S/composer")
+          printf '%s...\n' "${queued:0:24}" >> "$S/pending"
+        fi ;;
       boot|boot-blank|boot-park)
         # The shell runs the line: pi takes the pane over and shows the
         # message it received as its initial one — the kickoff, with the
@@ -378,6 +420,11 @@ case "${1:-}" in
       exit 0
     fi
     if [ -s "$S/transcript" ]; then cat "$S/transcript"; fi
+    if [ -s "$S/pending" ]; then
+      printf '\n'
+      while IFS= read -r q; do printf 'Steering: %s\n' "$q"; done < "$S/pending"
+      printf '↳ Alt+Up to edit all queued messages\n'
+    fi
     case "$layout" in
       live)   # working row, blank, composer — the composer sits directly
               # above the status border
@@ -405,6 +452,83 @@ EOS
   export PATH="$SB/bin:$PATH"
   export FAKE_TMUX_MODE=ok
   export FAKE_TMUX_LAYOUT=pi
+}
+
+# [fix-pending-notice REQ-1] a line pi queues behind a running turn is
+# delivered-pending: the truncated pending line confirms the send, the text is
+# typed once, and nothing is retyped or reported as failed.
+t_pending_req1_queued_message_confirms_without_retype() {
+  setup_send
+  local text='[demo] PR #19 (https://github.com/owner/repo/pull/19) got a CHANGES_REQUESTED review from alice - route it to the child with sub-send.sh demo. [pr-watch 1234]'
+  run_send "$text" steer pi 3 0
+  [ "$SEND_RC" -eq 0 ] \
+    || fail "a queued line must be confirmed delivered-pending, got $SEND_RC: $SEND_ERR"
+  [ -z "$SEND_ERR" ] || fail "a confirmed queued delivery must not warn: $SEND_ERR"
+  [ "$(sent_literals)" -eq 1 ] \
+    || fail "a queued line must not be retyped: $(cat "$FAKE_TMUX_DIR/log")"
+  [ "$(sent_enters)" -ge 1 ] || fail "Enter must be sent: $(cat "$FAKE_TMUX_DIR/log")"
+  [ "$(wc -l < "$FAKE_TMUX_DIR/pending")" -eq 1 ] \
+    || fail "exactly one queued copy expected: $(cat "$FAKE_TMUX_DIR/pending")"
+  [ ! -s "$FAKE_TMUX_DIR/transcript" ] \
+    || fail "the message must stay queued, not appear in the transcript: $(cat "$FAKE_TMUX_DIR/transcript")"
+}
+
+# [fix-pending-notice REQ-2] an older queued copy of the same message must not
+# confirm a line that is still parked in the composer.
+t_pending_req2_parked_copy_is_not_confirmed() {
+  setup_send
+  local text='[demo] PR #20 (https://github.com/owner/repo/pull/20) got a APPROVED review from bob - route it to the child with sub-send.sh demo. [pr-watch 5678]'
+  printf '%s...\n' "${text:0:24}" > "$FAKE_TMUX_DIR/pending"   # an older queued copy
+  run_send "$text" drop-enter pi 2 0
+  [ "$SEND_RC" -ne 0 ] || fail "a parked line was confirmed from a queued copy"
+  [ "$(sent_literals)" -eq 1 ] \
+    || fail "a visible parked line must not be retyped: $(cat "$FAKE_TMUX_DIR/log")"
+  grep -Fq "$text" "$FAKE_TMUX_DIR/composer" \
+    || fail "the line must stay parked, never abandoned: $(cat "$FAKE_TMUX_DIR/composer")"
+}
+
+# [fix-pending-notice REQ-2] even a NEW queued head (the count grew) never
+# confirms a copy that is still sitting in the composer: the composer guard —
+# not the growth guard — is what rejects it.
+t_pending_req2_new_pending_copy_with_parked_composer_is_not_confirmed() {
+  setup_send
+  local text='[demo] PR #21 (https://github.com/owner/repo/pull/21) got a COMMENTED review from carol - route it to the child with sub-send.sh demo. [pr-watch 1717]'
+  run_send "$text" steer-parked pi 2 0
+  [ "$SEND_RC" -ne 0 ] || fail "a parked line was confirmed from a new queued copy"
+  [ "$(sent_literals)" -eq 1 ] \
+    || fail "a visible parked line must not be retyped: $(cat "$FAKE_TMUX_DIR/log")"
+  grep -Fq "$text" "$FAKE_TMUX_DIR/composer" \
+    || fail "the line must stay parked, never abandoned: $(cat "$FAKE_TMUX_DIR/composer")"
+}
+
+# [fix-pending-notice REQ-3] another message's pending line is not evidence:
+# the typed line vanishes without being queued, and the send stays
+# unconfirmed.
+t_pending_req3_other_pending_line_is_not_evidence() {
+  setup_send
+  printf '%s\n' '[other] PR #7 (https://github.com/owner/repo/pull/7) was MERGED - retire the child now.' \
+    > "$FAKE_TMUX_DIR/pending"
+  run_send "the instruction that vanishes without a queue" vanish-all pi 2 0
+  [ "$SEND_RC" -ne 0 ] || fail "another message's pending line confirmed the send"
+  case $SEND_ERR in *vanished*) ;; *) fail "the failure should name the vanish: $SEND_ERR" ;; esac
+}
+
+# [fix-pending-notice REQ-8] the same collision with an identical head: two
+# notices on one PR (a review and the merge) share the first 20 flattened
+# characters, so a pre-existing queued copy must not confirm a send whose line
+# actually vanished — not through the pending region and not through the
+# transcript (a pending line is never transcript content).
+t_pending_req8_same_head_stale_copy_is_not_evidence() {
+  setup_send
+  local text='[demo] PR #51 (https://github.com/owner/repo/pull/51) was MERGED - retire the child now. [pr-watch 9001]'
+  local stale='[demo] PR #51 (https://github.com/owner/repo/pull/51) got a APPROVED review from alice - route it to the child with sub-send.sh demo. [pr-watch 8888]'
+  printf '%s...\n' "${stale:0:24}" > "$FAKE_TMUX_DIR/pending"
+  run_send "$text" vanish-all pi 2 0
+  [ "$SEND_RC" -ne 0 ] \
+    || fail "an older same-head pending copy confirmed a vanished send"
+  case $SEND_ERR in *vanished*) ;; *) fail "the failure should name the vanish: $SEND_ERR" ;; esac
+  [ "$(wc -l < "$FAKE_TMUX_DIR/pending")" -eq 1 ] \
+    || fail "the stale copy must not be duplicated: $(cat "$FAKE_TMUX_DIR/pending")"
 }
 
 SEND_RC=0; SEND_OUT=; SEND_ERR=
@@ -696,7 +820,13 @@ run "[fix-launch-confirm REQ-1] launch confirmed when pi boots fast"       t_sen
 run "[fix-launch-confirm REQ-2] launch line never retyped into pi"        t_send_req2_launch_line_is_never_retyped_into_pi
 run "[fix-launch-confirm REQ-4] shell send never confirms a composer"     t_send_req4_shell_send_never_confirms_a_parked_composer
 run "[fix-launch-confirm REQ-3] unescaped form is submission evidence"    t_send_req3_unescaped_form_is_submission_evidence
-run "[fix-send-confirm REQ-10 / fix-parked-prompt REQ-8 / fix-launch-confirm REQ-6] shellcheck-clean"  t_send_req10_shellcheck_clean
+run "[fix-send-confirm REQ-10 / fix-parked-prompt REQ-8 / fix-launch-confirm REQ-6 / fix-pending-notice REQ-7] shellcheck-clean"  t_send_req10_shellcheck_clean
+run "[fix-pending-notice REQ-1] parser extracts the pending region"   t_pending_req1_parser_extracts_the_pending_region
+run "[fix-pending-notice REQ-1] queued line confirmed without retype" t_pending_req1_queued_message_confirms_without_retype
+run "[fix-pending-notice REQ-2] parked copy is not confirmed"         t_pending_req2_parked_copy_is_not_confirmed
+run "[fix-pending-notice REQ-2] new queued copy + parked composer stays parked" t_pending_req2_new_pending_copy_with_parked_composer_is_not_confirmed
+run "[fix-pending-notice REQ-3] another pending line is not evidence"  t_pending_req3_other_pending_line_is_not_evidence
+run "[fix-pending-notice REQ-8] a same-head stale copy is not evidence" t_pending_req8_same_head_stale_copy_is_not_evidence
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"

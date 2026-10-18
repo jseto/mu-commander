@@ -441,7 +441,18 @@ review (routed back to the child with `sub-send.sh <task>`). It never mutates
 GitHub, never types into the child's pane, deduplicates submitted reviews,
 retries unconfirmed notices, and exits when the child's tmux session or
 worktree lease disappears or right after the confirmed notice for a terminal
-state. A watcher that cannot start only warns (skip both watcher windows with
+state. A notice the orchestrator queues behind a running turn is confirmed
+as delivered-pending by the shared verified send, so one event yields exactly
+one queued copy and later scans never append another
+(`specs/fix-pending-notice/`). A child's own reply inside a review thread is
+recorded by GitHub as a reply-only `COMMENTED` review (empty review body,
+every comment answering an earlier one) and is **never routed back**: the
+watcher attributes a `COMMENTED` review with one read-only `node(id:)` query
+before notifying it, records a reply-only one as handled, and leaves the
+body/top-level-comment reviews (the human's) actionable — a reviewer who
+answers *inside* a thread is therefore not routed, so reviews that ask for
+work should be submitted as a review (`specs/fix-self-review-loop/`).
+A watcher that cannot start only warns (skip both watcher windows with
 `SUB_SPAWN_NO_WATCH=1`, only this one with `SUB_SPAWN_NO_PR_WATCH=1`).
 Knobs: `PR_WATCH_INTERVAL` (scan interval, default 30 s),
 `PR_WATCH_RETRY_SECONDS` (failed-notice retry, default 5 s), `PR_WATCH_TICKS`
@@ -614,8 +625,13 @@ proof of delivery. `sub-send.sh` and the spawn path go through the shared
 ([scripts/_sub-common.sh](file://scripts/_sub-common.sh)), which re-types the
 text when it did not appear and drives its `Enter` retries from submission
 evidence: inside pi the send only succeeds once the prompt has **left the
-composer and appears in the transcript** — pane noise, redraws, and
-completion mutations never count. A prompt that is visible but whose region
+composer and either appears in the transcript or is shown in pi's
+pending-message display** because a running turn queued it as a steering
+message (`Steering: …`; that is delivery — pi injects the queued message as
+a turn) — pane noise, redraws, and
+completion mutations never count. Confirming the queued state is what keeps a
+failed-notice retry from appending the same notice to the orchestrator's queue
+again and again (`specs/fix-pending-notice/`). A prompt that is visible but whose region
 the helper cannot place (pi redraws between the typing and the capture) counts
 as **unknown, never as sent**: the helper presses `Enter` anyway — even when
 the line has not rendered yet, because `send-keys` has already queued its
