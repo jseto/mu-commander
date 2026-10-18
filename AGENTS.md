@@ -596,7 +596,11 @@ process therefore starts with the worktree as its current directory, not the
 main checkout. The kickoff is passed to pi as its **initial message
 argument** (`pi -n <task> --no-extensions -e <subagents-src> "<kickoff>"`), not typed into the composer, so a
 keystroke lost while pi initializes can never leave the child sitting idle
-with an unsent prompt.
+with an unsent prompt. The kickoff names the brief as the source of truth for
+what the task must deliver and points at this repository's `AGENTS.md` for
+the process: a change brief selects the commit/push/PR deliverable (against
+the resolved base) and a read-only brief selects change-nothing, so the two
+can never contradict each other (`specs/spawn-kickoff-brief/`).
 
 > **Children always load `@tintinweb/pi-subagents` from its `src` entry**
 > (user directive, 2026-10-17: "let children to load @tintinweb/pi-subagents:src
@@ -873,6 +877,15 @@ brief carries only the *what*: the requirement/issue, context/constraints, and
 deliverables (branch, PR, report path). One line suffices — e.g. *"Follow the
 `new-feature-fix` flow per this repo's AGENTS.md."* Never re-derive in a brief a
 process the repo already documents.
+
+**The kickoff defers to the brief.** `sub-spawn.sh` builds one kickoff and
+hands it to every child as pi's initial message. It names the brief as the
+source of truth for what the task must deliver, points at the repository's
+`AGENTS.md` for the process (it does not enumerate the flow either), and
+states both deliverable branches: a change brief commits on the task branch,
+pushes, and opens a PR against the resolved base; a read-only brief changes
+nothing, pushes nothing, and opens no PR. The brief decides which branch
+applies, so the kickoff can never contradict it.
 
 ### Referring to a subsession
 
