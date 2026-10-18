@@ -364,6 +364,17 @@ Hard rules:
   (`config.json`, …) — tests exercise behaviour, feeding fixtures as inputs
   when needed, but the shipped document/config content itself is not the
   subject under test.
+- **Tests never pin model ids or thinking levels** (user directive,
+  2026-10-18, "you should never test the models as I can modify the
+  config.json by hand and everythings should pass"): `config.json` is
+  hand-retuned, so a test that asserts a concrete model id or thinking level
+  (or a launch line containing one) fails the moment the owner edits the
+  config. Tests must be **model-agnostic**: assert the shape and ordering of
+  the launch line (options ahead of the kickoff, `-e` present, the level's
+  flags replacing the defaults), stub the model with a neutral fixture value,
+  and never read the level mapping out of `config.json` to build an
+  expectation. A stale model id in a test is a bug in the test, not a signal
+  that the config is wrong.
 - **Never touch `README.md`** (user directive, 2026-10-03, "you should never
   touch readme.md file"): the main session never edits a README, and a brief
   must not instruct a child to change one either — if a task would require
