@@ -180,13 +180,18 @@ sleep 0.5
 # The resolved model/thinking options join the command line ahead of the
 # kickoff (pi_launch_command), where pi parses them as options.
 PI_LAUNCH=$(pi_launch_command "$PI_BIN" "$TASK" "$CHILD_LAUNCH_FLAGS" "$KICKOFF")
-# tmux_send_line retries the Enter (and re-types the line) until the launch
-# is confirmed — this pane is a shell (pi has not booted yet), so the
-# confirmation is the pane content changing after an Enter — so a dropped
-# keystroke cannot leave the child idle. An
-# unconfirmed launch fails the spawn: reporting handles for a child that never
-# started is worse than a loud failure (the trap above releases everything).
-tmux_send_line "$SESS" "$PI_LAUNCH" \
+# tmux_send_shell_line retries the Enter until the launch is confirmed — this
+# pane is a shell (pi has not booted yet), so the confirmation is the pane
+# changing after an Enter and never escalates to pi transcript evidence a
+# shell launch line cannot satisfy. The shell expectation also keeps the launch
+# line from being re-typed into the pi that may have booted meanwhile (2026-10-18
+# escalated it to that rule and rolled back a healthy child, re-typing the
+# launch command into the running pi as a steering message). A dropped
+# keystroke still cannot leave the child idle: Enter is retried until the
+# bound, and an unconfirmed launch fails the spawn — reporting handles for a
+# child that never started is worse than a loud failure (the trap above
+# releases everything).
+tmux_send_shell_line "$SESS" "$PI_LAUNCH" \
   || die "could not confirm the kickoff was submitted to $SESS — not reporting an idle child"
 info "Waiting ${PI_BOOT_DELAY}s for pi to boot ..."
 sleep "$PI_BOOT_DELAY"
