@@ -148,7 +148,12 @@ fi
 #    brief lives in the main checkout) instead of being typed into the
 #    composer: a send-keys kickoff races pi's startup, and a dropped Enter
 #    leaves the prompt stranded in the input box — a child that never starts.
-KICKOFF="Read the task brief at $TF and complete the full flow (atomic specs, implementation, code audit). Commit your work on the current branch ($BRANCH). Push your branch to origin and create a pull request against $BASE_BRANCH using gh pr create. Write your report to $RF (what you changed, test results, PR link, notes). Do not use notify, ntfy, or any other external notification mechanism. When done or blocked, use only $SCRIPT_DIR/sub-report.sh $TASK \"DONE: <one-line summary> (PR #...)\" (or BLOCKED: <reason>)"
+#    It names the brief as the source of truth for what the task must deliver
+#    and points at the repository's AGENTS.md for the process, so it can never
+#    contradict a read-only brief (specs/spawn-kickoff-brief): the change
+#    deliverable (commit, push, PR) applies only when the brief is a change
+#    task, and a read-only brief overrides it.
+KICKOFF="Read the task brief at $TF. It is the source of truth for what this task must deliver. Follow the process this repository's AGENTS.md defines. If the brief is a change task, commit your work on the current branch ($BRANCH), push your branch to origin, and open a pull request against $BASE_BRANCH using gh pr create. If the brief is read-only, change nothing, push nothing, and open no PR. Write your report to $RF (findings or changes, test results, links where the brief calls for them, notes). Do not use notify, ntfy, or any other external notification mechanism. When done or blocked, use only $SCRIPT_DIR/sub-report.sh $TASK \"DONE: <one-line summary>\" (or BLOCKED: <reason>)"
 
 # 5. Boot pi in a named tmux session, rooted in the worktree. The isolated
 #    agent directory deliberately provides no extensions or packages of its

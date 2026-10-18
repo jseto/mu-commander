@@ -52,7 +52,12 @@ pane() {
   # Plain session name: the harness talks to its own isolated tmux server
   # (TMUX_TMPDIR), so the name is unambiguous. Note `=name` is only valid for
   # has-session, never as a pane target (see AGENTS.md, sub-report.sh).
-  env -u TMUX TMUX_TMPDIR="$SOCKDIR" tmux capture-pane -t "$SESS" -p \
+  # Capture from the start of the scrollback, not just the visible pane: the
+  # typed launch line is the first thing a spawn writes, and a kickoff long
+  # enough to wrap past the visible pane height would otherwise push it out of
+  # the capture and fail the launch-line non-vacuity check for the wrong
+  # reason (observed when specs/spawn-kickoff-brief lengthened the kickoff).
+  env -u TMUX TMUX_TMPDIR="$SOCKDIR" tmux capture-pane -t "$SESS" -p -S - \
     2>/dev/null || true
 }
 
