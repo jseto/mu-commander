@@ -5,9 +5,15 @@ Feature: Notify the orchestrator of pull-request events on a live child
   events need the orchestrator while the child is still alive: the PR was
   merged (the orchestrator retires the child), the PR was closed without
   merging, and a human review was submitted — especially a "request
-  changes" review, which must reach the child. `sub-spawn.sh` therefore
-  arms one watcher per child (`scripts/sub-pr-watch.sh`) in a `pr-watch`
-  window of the child's tmux session. The watcher polls the branch checked
+  changes" review, which must reach the child. Since the
+  `unified-child-watcher` change (2026-10-19,
+  [`specs/unified-child-watcher/`](file://specs/unified-child-watcher/))
+  `sub-spawn.sh` arms ONE watcher per child
+  ([`scripts/sub-watch.sh`](file://scripts/sub-watch.sh)) in a single
+  `watch` window, and this PR service is one of its three services;
+  [`scripts/sub-pr-watch.sh`](file://scripts/sub-pr-watch.sh) remains the
+  single-service entry point for development and for this suite. The
+  service polls the branch checked
   out in the child's leased worktree, read-only, with `gh` (no webhook and
   no external service) and pushes each event as a verified notice into the
   main orchestrator session through `sub-report.sh` — the same verified
@@ -138,19 +144,19 @@ Feature: Notify the orchestrator of pull-request events on a live child
     When the watcher scans
     Then it exits 0 without sending a notice
 
-  Scenario: Every spawn arms the child's pr-watch window [REQ-15]
+  Scenario: Every spawn arms the child's watcher with the PR service [REQ-15]
     Given sub-spawn spawns a child
-    Then the child's tmux session gains a "pr-watch" window running
-      "scripts/sub-pr-watch.sh" for that task
-    And the spawn handles report the pr-watch state
-    And SUB_SPAWN_NO_PR_WATCH=1 disables only the pr-watch window
-    And SUB_SPAWN_NO_WATCH=1 disables the watcher windows
+    Then the child's tmux session gains one "watch" window running
+      "scripts/sub-watch.sh" with the PR service enabled
+    And the spawn handles report the watch state
+    And SUB_SPAWN_NO_PR_WATCH=1 arms the watcher without the PR service
+    And SUB_SPAWN_NO_WATCH=1 skips the watcher window
 
   Scenario: A watcher window that cannot start does not fail the spawn [REQ-16]
-    Given a tmux that refuses to create the pr-watch window
+    Given a tmux that refuses to create the watch window
     When sub-spawn spawns a child
     Then the spawn still succeeds and reports the child
-    And the spawn warns that the pr-watch window could not be created
+    And the spawn warns that the watch window could not be created
 
   Scenario: Touched scripts stay shellcheck-clean [REQ-17]
     Given shellcheck is available

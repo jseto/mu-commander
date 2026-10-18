@@ -6,9 +6,15 @@ A child opens a pull request for its task branch and then goes idle, so the
 GitHub-side events the orchestrator must act on — the PR was **merged**, it
 was **closed without merging**, and a **review was submitted** — wait for
 someone to check by hand. The fix adds one supervisor-owned watcher per
-child, [`scripts/sub-pr-watch.sh`](file://scripts/sub-pr-watch.sh), armed by
-[`scripts/sub-spawn.sh`](file://scripts/sub-spawn.sh) in a dedicated
-`pr-watch` window of the child's tmux session. The watcher polls the branch
+child, [`scripts/_sub-watch.sh`](file://scripts/_sub-watch.sh) (the PR
+service) — since the `unified-child-watcher` change (2026-10-19,
+[`specs/unified-child-watcher/`](file://specs/unified-child-watcher/)) that
+service runs inside the single `watch` window process
+([`scripts/sub-watch.sh`](file://scripts/sub-watch.sh)) together with the
+Lavish wake-up and the stall detector;
+[`scripts/sub-pr-watch.sh`](file://scripts/sub-pr-watch.sh) remains the
+single-service entry point for development and for this suite. The service
+polls the branch
 read-only with `gh pr list` (never a mutating `gh` command, never a push) and
 pushes each event as a one-line notice into the main orchestrator session
 through the same verified send every child notice uses
@@ -32,8 +38,9 @@ child and dies with the child's tmux session.
 
 ## Entities and seams
 
-- [`scripts/sub-pr-watch.sh`](file://scripts/sub-pr-watch.sh) **(new)** — the
-  watcher loop and its seams:
+- [`scripts/_sub-watch.sh`](file://scripts/_sub-watch.sh) **(new)** — the
+  PR service and the shared engine:
+  - `pr_tick` — one scan; the service seams are:
   - `lease_state <status-json> <task>` + `lease_alive <task> <root>` — a
     **three-valued** lease check (`alive`/`gone`/`unknown`). `wt_for_task`
     collapses a failed `treehouse status` and a missing lease into "empty",
@@ -61,12 +68,12 @@ child and dies with the child's tmux session.
   - `send_notice` — the only delivery path; returns 0 only when
     `sub-report.sh` confirmed the submission.
 - [`scripts/sub-spawn.sh`](file://scripts/sub-spawn.sh) **(modified)** —
-  right after the `lavish-watch` window, creates the `pr-watch` window
-  (`tmux new-window -d -t =$SESS: -n pr-watch -c $WT "exec …"`, passing task,
-  root and branch explicitly), prints a `pr-watch:` handle, warns when the
-  window cannot be created, and honors `SUB_SPAWN_NO_PR_WATCH=1` (only this
-  watcher) and `SUB_SPAWN_NO_WATCH=1` (all watcher windows). Best effort: a
-  missing window never fails the spawn.
+  arms the single `watch` window
+  (`tmux new-window -d -t =$SESS: -n watch -c $WT "exec …"`, passing task,
+  root and branch explicitly), prints a `watch:` handle, warns when the
+  window cannot be created, and honors `SUB_SPAWN_NO_PR_WATCH=1` (removes
+  only this service from the watcher) and `SUB_SPAWN_NO_WATCH=1` (the whole
+  watcher). Best effort: a missing window never fails the spawn.
 - [`scripts/_sub-common.sh`](file://scripts/_sub-common.sh) **(unchanged)** —
   `repo_root`, `session_of`, `wt_for_task`, `info`/`warn`/`die` are reused.
 - Reused seams: `sub-report.sh` (the verified notice send into
@@ -87,7 +94,7 @@ child and dies with the child's tmux session.
 
 ```mermaid
 flowchart TD
-  SP[sub-spawn.sh] -->|tmux new-window -n pr-watch -c WT| W[sub-pr-watch.sh task root branch]
+  SP[sub-spawn.sh] -->|tmux new-window -n watch -c WT| W["sub-watch.sh (PR service)"]
   W -->|has-session? each scan| T[tmux child session]
   W -->|lease_alive: treehouse status --json| L[worktree lease]
   W -->|read_pr: gh pr list --head branch --state all| G[(GitHub read-only)]
@@ -122,14 +129,15 @@ notice.
 
 ## Plan
 
-1. Add `scripts/sub-pr-watch.sh`: `main` guarded by `BASH_SOURCE == $0`,
-   pure seams (`lease_state`, `read_pr`'s jq normalization, `review_signature`,
-   `compose_*`, `new_epoch`) plus the impure wrappers (`lease_alive`,
-   `send_notice`); the loop wires the decision table above and is bounded by
-   `PR_WATCH_TICKS` for tests.
-2. Wire it into `sub-spawn.sh` right after the Lavish window (best-effort,
-   `pr-watch:` handle, `SUB_SPAWN_NO_PR_WATCH=1` / `SUB_SPAWN_NO_WATCH=1`
-   opt-outs, branch passed explicitly).
+1. Add the PR service to `scripts/_sub-watch.sh` (engine + `pr_tick`),
+   with the pure seams (`lease_state`, `read_pr`'s jq normalization,
+   `review_signature`, `compose_*`, `new_epoch`) plus the impure wrappers
+   (`lease_alive`, `send_notice`); the loop wires the decision table above
+   and is bounded by `PR_WATCH_TICKS` for tests.
+2. Wire it into `sub-spawn.sh` as the PR member of the single `watch`
+   window (best-effort, `watch:` handle, `SUB_SPAWN_NO_PR_WATCH=1` /
+   `SUB_SPAWN_NO_WATCH=1` opt-outs, branch passed explicitly; see
+   `specs/unified-child-watcher/`).
 3. Document the convention in `AGENTS.md` (window, opt-outs, knobs,
    pointers to spec and tests). `sub-retire.sh` needs no change: killing the
    session kills the window.
@@ -140,11 +148,12 @@ notice.
 
 | File | Change |
 | --- | --- |
-| `scripts/sub-pr-watch.sh` | new watcher (scan, lease check, dedupe, notices, exit) |
-| `scripts/sub-spawn.sh` | arm the `pr-watch` window after `lavish-watch`, report it, warn on failure |
-| `specs/pr-action-watch/` | new feature + design |
-| `AGENTS.md` | short child PR action watch note |
-| `tests/pr-action-watch.test.sh` | Test phase: new suite, `[REQ-1]`…`[REQ-17]` |
+| `scripts/_sub-watch.sh` | PR service (scan, lease check, dedupe, notices) in the shared engine |
+| `scripts/sub-pr-watch.sh` | single-service entry point (`SUB_WATCH_SERVICES=pr`) |
+| `scripts/sub-spawn.sh` | arm the single `watch` window, report it, warn on failure |
+| `specs/pr-action-watch/` | feature + design |
+| `AGENTS.md` | child watcher note |
+| `tests/pr-action-watch.test.sh` | suite, `[REQ-1]`…`[REQ-17]` |
 
 ## Constant values
 

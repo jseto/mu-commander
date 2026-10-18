@@ -88,17 +88,18 @@ Feature: Wake a child when Lavish feedback is queued
     When the watcher scans the state
     Then it exits 0 without sending keys
 
-  Scenario: Every spawn arms the child's watcher [REQ-12]
+  Scenario: Every spawn arms the child's watcher with the Lavish service [REQ-12]
     Given sub-spawn spawns a child
-    Then the child's tmux session gains a "lavish-watch" window running
-      "scripts/sub-lavish-watch.sh" for that task
+    Then the child's tmux session gains a "watch" window running
+      "scripts/sub-watch.sh" with the Lavish service enabled
+      (specs/unified-child-watcher)
     And SUB_SPAWN_NO_WATCH=1 skips the watcher window
 
   Scenario: A watcher that cannot start does not fail the spawn [REQ-13]
-    Given a tmux that refuses to create the watcher window
+    Given a tmux that refuses to create the watch window
     When sub-spawn spawns a child
     Then the spawn still succeeds and reports the child
-    And the spawn warns that the watcher window could not be created
+    And the spawn warns that the watch window could not be created
 
   Scenario: Touched scripts stay shellcheck-clean [REQ-14]
     Given shellcheck is available

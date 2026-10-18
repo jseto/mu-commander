@@ -412,52 +412,73 @@ chat; do not add Telegram menu surfaces for it. The `lavish-telegram`
 extension (pi-config repo) automates link delivery (it is already
 local-first) and the background feedback poll.
 
-### Child Lavish wake-up
+### Child watcher (one process for every watching service)
 
-`sub-spawn.sh` arms one `scripts/sub-lavish-watch.sh` per child in a
-`lavish-watch` window of the child's tmux session (it dies with the session
-on retirement). The watcher never runs `lavish-axi poll` and never consumes
-feedback: it scans `$LAVISH_AXI_STATE_DIR/state.json` read-only for sessions
-whose artifact lives under the child's worktree with queued
-(`pending_prompts`) prompts and wakes the child through the verified
-`sub-send.sh` send, which tells the child to drain its queue with its normal
-`lavish-axi poll`. Wakes are deduplicated per queued batch and retried when
-unconfirmed; a pane that is not running `pi` is never typed into; a watcher
-that cannot start only warns (skip it with `SUB_SPAWN_NO_WATCH=1`). Knobs:
-`LAVISH_WATCH_INTERVAL`, `LAVISH_WATCH_RETRY_SECONDS`,
-`LAVISH_WATCH_REWAKE_SECONDS`, `LAVISH_WATCH_START_MARGIN`. Spec:
-`specs/lavish-wake/`, tests: `tests/lavish-wake.test.sh`.
+`sub-spawn.sh` arms ONE watcher per child in a single `watch` window of the
+child's tmux session (it dies with the session on retirement), running
+`scripts/sub-watch.sh`: one process that folds the three watching services
+into one loop — Lavish wake-up, PR action watch, and free-provider stall
+detection. `scripts/_sub-watch.sh` holds the engine and the services;
+`scripts/sub-lavish-watch.sh` and `scripts/sub-pr-watch.sh` remain as
+single-service entry points for development and for their suites, which
+exercise the same ticks. Every service keeps its guarantees:
 
-### Child PR action watch
+- **Lavish wake-up** — never runs `lavish-axi poll` and never consumes
+  feedback: it scans `$LAVISH_AXI_STATE_DIR/state.json` read-only for
+  sessions whose artifact lives under the child's worktree with queued
+  (`pending_prompts`) prompts and wakes the child through the verified
+  `sub-send.sh` send, which tells the child to drain its queue with its
+  normal `lavish-axi poll`. Wakes are deduplicated per queued batch and
+  retried when unconfirmed; a pane that is not running `pi` is never typed
+  into. Knobs: `LAVISH_WATCH_INTERVAL`, `LAVISH_WATCH_RETRY_SECONDS`,
+  `LAVISH_WATCH_REWAKE_SECONDS`, `LAVISH_WATCH_START_MARGIN`. Spec:
+  `specs/lavish-wake/`, tests: `tests/lavish-wake.test.sh`.
+- **PR action watch** — polls the branch checked out in the child's leased
+  worktree read-only with `gh pr list` and pushes each event as a verified
+  notice into the orchestrator session through `sub-report.sh`: a merged PR
+  ("retire the child now"), a PR closed without merging, and every
+  submitted `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` review (routed
+  back to the child with `sub-send.sh <task>`). A notice the orchestrator
+  queues behind a running turn is confirmed as delivered-pending by the
+  shared verified send, so one event yields exactly one queued copy and
+  later scans never append another (`specs/fix-pending-notice/`). A child's
+  own reply inside a review thread is recorded by GitHub as a reply-only
+  `COMMENTED` review (empty review body, every comment answering an earlier
+  one) and is **never routed back**: the watcher attributes a `COMMENTED`
+  review with one read-only `node(id:)` query before notifying it, records
+  a reply-only one as handled, and leaves the body/top-level-comment
+  reviews (the human's) actionable — a reviewer who answers *inside* a
+  thread is therefore not routed, so reviews that ask for work should be
+  submitted as a review (`specs/fix-self-review-loop/`). An unreadable
+  attribution is retried for that review only, so a poisoned read never
+  starves the later reviews of the same scan. It never mutates
+  GitHub, never types into the child's pane, deduplicates submitted reviews,
+  retries unconfirmed notices, and stops only the PR service after the
+  confirmed notice for a terminal state (the other services keep watching
+  until the child is retired). Knobs: `PR_WATCH_INTERVAL` (scan interval,
+  default 30 s), `PR_WATCH_RETRY_SECONDS` (failed-notice retry, default
+  5 s), `PR_WATCH_TICKS` (test bound, 0 = unbounded). Spec:
+  `specs/pr-action-watch/`, tests: `tests/pr-action-watch.test.sh`.
+- **Stall detection** — polls the child's pane with the shared
+  `pane_has_free_limit_error` signature (`FreeUsageLimitError`/429,
+  `FreeTierError`/403) and, on a hit, pushes a notify-only `STUCK:` notice
+  through `sub-report.sh` telling the orchestrator to run the
+  never-speculative `sub-fallback.sh <task>` and nudge the child to
+  continue — the watcher never switches the model itself. A confirmed
+  notice is not repeated while the same failure stays visible and a cleared
+  failure resets the dedupe; unconfirmed notices are retried with a fresh
+  `[stall-watch <epoch>]` marker. Knobs: `STALL_WATCH_INTERVAL` (default
+  30 s), `STALL_WATCH_RETRY_SECONDS` (default 30 s),
+  `STALL_WATCH_REWAKE_SECONDS` (default 900 s),
+  `STALL_WATCH_SCAN_LINES` (default 50), `STALL_WATCH_TICKS` (test bound,
+  0 = unbounded). Spec: `specs/unified-child-watcher/`, tests:
+  `tests/unified-child-watcher.test.sh`.
 
-`sub-spawn.sh` also arms one `scripts/sub-pr-watch.sh` per child in a
-`pr-watch` window of the child's tmux session (it dies with the session on
-retirement, like the Lavish watcher). The watcher polls the branch checked
-out in the child's leased worktree read-only with `gh pr list` and pushes
-each event as a verified notice into the orchestrator session through
-`sub-report.sh`: a merged PR ("retire the child now"), a PR closed without
-merging, and every submitted `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED`
-review (routed back to the child with `sub-send.sh <task>`). It never mutates
-GitHub, never types into the child's pane, deduplicates submitted reviews,
-retries unconfirmed notices, and exits when the child's tmux session or
-worktree lease disappears or right after the confirmed notice for a terminal
-state. A notice the orchestrator queues behind a running turn is confirmed
-as delivered-pending by the shared verified send, so one event yields exactly
-one queued copy and later scans never append another
-(`specs/fix-pending-notice/`). A child's own reply inside a review thread is
-recorded by GitHub as a reply-only `COMMENTED` review (empty review body,
-every comment answering an earlier one) and is **never routed back**: the
-watcher attributes a `COMMENTED` review with one read-only `node(id:)` query
-before notifying it, records a reply-only one as handled, and leaves the
-body/top-level-comment reviews (the human's) actionable — a reviewer who
-answers *inside* a thread is therefore not routed, so reviews that ask for
-work should be submitted as a review (`specs/fix-self-review-loop/`).
-A watcher that cannot start only warns (skip both watcher windows with
-`SUB_SPAWN_NO_WATCH=1`, only this one with `SUB_SPAWN_NO_PR_WATCH=1`).
-Knobs: `PR_WATCH_INTERVAL` (scan interval, default 30 s),
-`PR_WATCH_RETRY_SECONDS` (failed-notice retry, default 5 s), `PR_WATCH_TICKS`
-(test bound, 0 = unbounded). Spec: `specs/pr-action-watch/`, tests:
-`tests/pr-action-watch.test.sh`.
+The watcher is best-effort: a window that cannot start only warns, and
+`SUB_SPAWN_NO_WATCH=1` skips it; `SUB_SPAWN_NO_PR_WATCH=1` arms it without
+the PR service. While developing, `SUB_WATCH_SERVICES` selects the services
+for a run (comma-separated `lavish,pr,stall`, default all three; unknown
+names warn and are ignored, an empty selection exits without watching).
 
 ### Child model and thinking levels
 

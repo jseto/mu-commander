@@ -5,14 +5,19 @@
 A child that opens a Lavish artifact and goes idle has no poll listener, so
 browser feedback stays queued in the Lavish server's state file
 (`pending_prompts`) and only a manual `sub-send.sh … "poll"` gets it moving.
-The fix adds one supervisor-owned watcher per child,
-[`scripts/sub-lavish-watch.sh`](file://scripts/sub-lavish-watch.sh), armed by
-[`scripts/sub-spawn.sh`](file://scripts/sub-spawn.sh) in a dedicated
-`lavish-watch` window of the child's tmux session. The watcher reads the
-Lavish state file (`$LAVISH_AXI_STATE_DIR/state.json`, read-only), selects
-sessions whose artifact is under the child's leased worktree and whose
-`pending_prompts > 0`, and wakes the child through the existing verified send
-(`sub-send.sh` → `tmux_send_line`). It never polls and never consumes
+The fix adds one supervisor-owned watcher per child. Since the
+`unified-child-watcher` change (2026-10-19,
+[`specs/unified-child-watcher/`](file://specs/unified-child-watcher/)) that
+watcher is the single `watch` window process
+([`scripts/sub-watch.sh`](file://scripts/sub-watch.sh)), which runs this
+Lavish service together with the PR action watch and the stall detector;
+[`scripts/sub-lavish-watch.sh`](file://scripts/sub-lavish-watch.sh) remains
+the single-service entry point for development and for this suite, and
+[`scripts/_sub-watch.sh`](file://scripts/_sub-watch.sh) holds the service.
+The service reads the Lavish state file (`$LAVISH_AXI_STATE_DIR/state.json`,
+read-only), selects sessions whose artifact is under the child's leased
+worktree and whose `pending_prompts > 0`, and wakes the child through the
+existing verified send (`sub-send.sh` → `tmux_send_line`). It never polls and never consumes
 feedback: the child drains its own queue with `lavish-axi poll`, exactly as
 before. Wakes are deduplicated per queued batch, failed sends are retried
 with backoff, non-`pi` panes are never typed into, and the watcher exits when
@@ -21,20 +26,25 @@ dies with it).
 
 ## Entities and seams
 
-- [`scripts/sub-lavish-watch.sh`](file://scripts/sub-lavish-watch.sh)
-  **(new)** — the watcher loop and its two seams:
+- [`scripts/_sub-watch.sh`](file://scripts/_sub-watch.sh) **(new)** — the
+  Lavish service (`lavish_pending_sessions`, `compose_wake_message`,
+  `lavish_wake_child`, `lavish_tick`) and the shared watcher engine. It
+  holds the two pure seams:
   - `lavish_pending_sessions <state-file> <wt> <since>` — pure read of the
     Lavish state; emits the pending-session JSON (key, file, count, prompts)
     for the child's worktree.
   - `compose_wake_message` — formats the one-line wake from that JSON.
   Everything else (state path, intervals, tick bound) is environment-driven
   so tests can sandbox it.
+- [`scripts/sub-lavish-watch.sh`](file://scripts/sub-lavish-watch.sh)
+  **(modified)** — the single-service entry point: sources the library and
+  runs the engine with `SUB_WATCH_SERVICES=lavish`; its argv, messages, and
+  knobs are unchanged.
 - [`scripts/sub-spawn.sh`](file://scripts/sub-spawn.sh) **(modified)** —
-  after the kickoff is confirmed, creates the watcher window
-  (`tmux new-window -d -t =$SESS: -n lavish-watch -c $WT "exec …"`),
-  prints a `watch:` handle, warns when the window cannot be created, and
-  honors `SUB_SPAWN_NO_WATCH=1`. Best effort: a missing watcher never fails
-  the spawn.
+  arms the single `watch` window (`scripts/sub-watch.sh`), prints a `watch:`
+  handle, warns when the window cannot be created, and honors
+  `SUB_SPAWN_NO_WATCH=1` (all services) and `SUB_SPAWN_NO_PR_WATCH=1` (the
+  PR service only). Best effort: a missing watcher never fails the spawn.
 - [`scripts/_sub-common.sh`](file://scripts/_sub-common.sh) **(unchanged)** —
   `wt_for_task`, `session_of`, `tmux_send_line`, `info`/`warn` are reused as
   they are.
@@ -53,7 +63,7 @@ dies with it).
 
 ```mermaid
 flowchart TD
-  SP[sub-spawn.sh] -->|tmux new-window -d -n lavish-watch| W[sub-lavish-watch.sh]
+  SP[sub-spawn.sh] -->|tmux new-window -d -n watch| W["sub-watch.sh (lavish service)"]
   W -->|read-only scan every interval| S[(LAVISH_AXI_STATE_DIR/state.json)]
   W -->|has-session?| T[tmux child session]
   S -->|pending_prompts > 0, status != ended, file under $WT, fresh| P[compose wake message]
@@ -79,12 +89,13 @@ else (same batch):       wake again only after the re-wake interval
 
 ## Plan
 
-1. Add `scripts/sub-lavish-watch.sh`: `main` guarded by
-   `BASH_SOURCE == $0`, so tests can source the pure helpers; loop over
+1. Add the Lavish service to `scripts/_sub-watch.sh` (engine +
+   `lavish_tick`), keeping the scan/dedupe/wake body; loop over
    `tmux has-session` → scan → dedupe → guarded verified wake → bounded
    ticks/interval.
-2. Wire it into `sub-spawn.sh` as a detached `lavish-watch` window
-   (best-effort, `watch:` handle, `SUB_SPAWN_NO_WATCH=1` opt-out).
+2. Wire it into `sub-spawn.sh` as the Lavish member of the single `watch`
+   window (best-effort, `watch:` handle, `SUB_SPAWN_NO_WATCH=1` opt-out;
+   see `specs/unified-child-watcher/`).
 3. Add `tests/lavish-wake.test.sh`: fake tmux/treehouse/lavish-axi and
    fixture state files; one test per scenario `[REQ-1]`…`[REQ-14]`.
 4. Document the convention in `AGENTS.md`.
@@ -93,11 +104,12 @@ else (same batch):       wake again only after the re-wake interval
 
 | File | Change |
 | --- | --- |
-| `scripts/sub-lavish-watch.sh` | new watcher (scan, dedupe, guarded verified wake, exit) |
-| `scripts/sub-spawn.sh` | arm the watcher window, report it, warn on failure |
-| `tests/lavish-wake.test.sh` | new suite, `[REQ-1]`…`[REQ-14]` |
-| `specs/lavish-wake/` | new feature + design |
-| `AGENTS.md` | short child-wake-up note |
+| `scripts/_sub-watch.sh` | Lavish service (scan, dedupe, guarded verified wake) in the shared engine |
+| `scripts/sub-lavish-watch.sh` | single-service entry point (`SUB_WATCH_SERVICES=lavish`) |
+| `scripts/sub-spawn.sh` | arm the single `watch` window, report it, warn on failure |
+| `tests/lavish-wake.test.sh` | suite, `[REQ-1]`…`[REQ-14]` |
+| `specs/lavish-wake/` | feature + design |
+| `AGENTS.md` | child-watcher note |
 
 ## Constant values
 
