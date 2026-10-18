@@ -47,7 +47,7 @@ setup_fakes() {
 # change, which is what the verified send confirms against); modes:
 #   ok                  normal
 #   drop-enter          Enter is swallowed (the send can never be confirmed)
-#   no-pr-watch-window  only the pr-watch window is refused
+#   no-watch-window     the unified watch window is refused
 #   steer               the main pane is a pi TUI mid-turn: Enter queues the
 #                       submitted text as ONE truncated pending `Steering:`
 #                       line instead of a transcript entry (the 2026-10-18
@@ -151,7 +151,7 @@ case "$cmd" in
         *) shift ;;
       esac
     done
-    [ "$mode" = no-pr-watch-window ] && [ "$name" = pr-watch ] && exit 1
+    [ "$mode" = no-watch-window ] && [ "$name" = watch ] && exit 1
     [ -n "$name" ] && : > "$S/windows/$name"
     : ;;
   *) : ;;
@@ -1013,6 +1013,7 @@ run_spawn() { # $1=fixture-dir [$2=no-pr-watch|no-watch]
   case $mode in
     no-pr-watch) envs+=(SUB_SPAWN_NO_PR_WATCH=1) ;;
     no-watch)    envs+=(SUB_SPAWN_NO_WATCH=1) ;;
+    no-services) envs+=(SUB_SPAWN_NO_PR_WATCH=1 SUB_WATCH_SERVICES=pr) ;;
   esac
   RC=0
   OUT=$("${envs[@]}" bash "$SPAWN" "$TASK" "$fx/repo" 2>"$fx/spawn-stderr") || RC=$?
@@ -1020,57 +1021,53 @@ run_spawn() { # $1=fixture-dir [$2=no-pr-watch|no-watch]
   TLOG=$(cat "$fx/tmux/log" 2>/dev/null || true)
 }
 
-t_req15_every_spawn_arms_the_pr_watch_window() {
+t_req15_every_spawn_arms_the_unified_watcher() {
   jq_ok || return 0
   local fx="$SCRATCH/spawn-default"
   make_spawn_fixture "$fx"
   run_spawn "$fx"
   [ "$RC" -eq 0 ] || fail "spawn exit=$RC stderr=$ERR"
-  grep -qE -- '-n pr-watch( |$)' <<<"$TLOG" || fail "no pr-watch window created: $TLOG"
-  grep -qF -- "sub-pr-watch.sh $TASK $fx/repo $BRANCH" <<<"$TLOG" \
-    || fail "the pr-watch window must run the watcher for task/root/branch: $TLOG"
-  grep -qF 'pr-watch: pr-watch window in pi-demo' <<<"$OUT" \
-    || fail "the handles must report the pr-watch window: $OUT"
+  grep -qE -- '-n watch( |$)' <<<"$TLOG" || fail "no watch window created: $TLOG"
+  grep -qF -- "sub-watch.sh $TASK $fx/repo $BRANCH" <<<"$TLOG" \
+    || fail "the watch window must run the unified watcher for task/root/branch: $TLOG"
+  grep -qF 'SUB_WATCH_SERVICES=lavish' <<<"$TLOG" \
+    || fail "the watcher must be armed with the default services: $TLOG"
+  grep -qF 'watch:    watch window in pi-demo (services: lavish,pr,stall)' <<<"$OUT" \
+    || fail "the handles must report the watch window: $OUT"
 
   local fx2="$SCRATCH/spawn-no-pr-watch"
   make_spawn_fixture "$fx2"
   run_spawn "$fx2" no-pr-watch
   [ "$RC" -eq 0 ] || fail "no-pr-watch spawn exit=$RC stderr=$ERR"
-  grep -qE -- '-n pr-watch( |$)' <<<"$TLOG" && fail "SUB_SPAWN_NO_PR_WATCH=1 must skip the pr-watch window"
-  grep -qE -- '-n lavish-watch( |$)' <<<"$TLOG" \
-    || fail "SUB_SPAWN_NO_PR_WATCH=1 must keep the lavish-watch window: $TLOG"
-  grep -qF 'pr-watch: disabled (SUB_SPAWN_NO_PR_WATCH=1)' <<<"$OUT" \
-    || fail "the handles must report the pr-watch opt-out: $OUT"
-  grep -qF 'watch:    lavish-watch window in pi-demo' <<<"$OUT" \
-    || fail "the handles must keep reporting the lavish watcher: $OUT"
+  grep -qE -- '-n watch( |$)' <<<"$TLOG" \
+    || fail "SUB_SPAWN_NO_PR_WATCH=1 must keep the unified watcher: $TLOG"
+  grep -qF 'SUB_WATCH_SERVICES=lavish\,stall' <<<"$TLOG" \
+    || fail "SUB_SPAWN_NO_PR_WATCH=1 must arm the watcher without the PR service: $TLOG"
+  grep -qF 'watch:    watch window in pi-demo (services: lavish,stall)' <<<"$OUT" \
+    || fail "the handles must report the reduced service set: $OUT"
 
   local fx3="$SCRATCH/spawn-no-watch"
   make_spawn_fixture "$fx3"
   run_spawn "$fx3" no-watch
   [ "$RC" -eq 0 ] || fail "no-watch spawn exit=$RC stderr=$ERR"
-  grep -qE -- '-n pr-watch( |$)' <<<"$TLOG" && fail "SUB_SPAWN_NO_WATCH=1 must skip the pr-watch window"
-  grep -qE -- '-n lavish-watch( |$)' <<<"$TLOG" && fail "SUB_SPAWN_NO_WATCH=1 must skip the lavish-watch window"
-  grep -qF 'pr-watch: disabled (SUB_SPAWN_NO_WATCH=1)' <<<"$OUT" \
-    || fail "the handles must report the pr-watch opt-out: $OUT"
+  grep -qE -- '-n watch( |$)' <<<"$TLOG" && fail "SUB_SPAWN_NO_WATCH=1 must skip the watcher"
   grep -qF 'watch:    disabled (SUB_SPAWN_NO_WATCH=1)' <<<"$OUT" \
-    || fail "the handles must report the lavish opt-out: $OUT"
+    || fail "the handles must report the watcher opt-out: $OUT"
 }
 
-t_req16_unstartable_pr_watch_window_does_not_fail_spawn() {
+t_req16_unstartable_watch_window_does_not_fail_spawn() {
   jq_ok || return 0
-  local fx="$SCRATCH/spawn-pr-watch-fail"
+  local fx="$SCRATCH/spawn-watch-fail"
   make_spawn_fixture "$fx"
-  printf 'no-pr-watch-window\n' > "$fx/tmux/mode"
+  printf 'no-watch-window\n' > "$fx/tmux/mode"
   run_spawn "$fx"
-  [ "$RC" -eq 0 ] || fail "spawn must succeed without the pr-watch window, got exit=$RC stderr=$ERR"
-  grep -qF 'could not create the pr-watch window' <<<"$ERR" \
-    || fail "the spawn must warn about the missing pr-watch window: $ERR"
-  grep -qF 'pr-watch: unavailable' <<<"$OUT" \
-    || fail "the handles must show the pr-watch window unavailable: $OUT"
+  [ "$RC" -eq 0 ] || fail "spawn must succeed without the watch window, got exit=$RC stderr=$ERR"
+  grep -qF 'could not create the watch window' <<<"$ERR" \
+    || fail "the spawn must warn about the missing watch window: $ERR"
+  grep -qF 'watch:    unavailable' <<<"$OUT" \
+    || fail "the handles must show the watch window unavailable: $OUT"
   grep -qF 'session:  pi-demo' <<<"$OUT" \
     || fail "the spawn must still report the child: $OUT"
-  grep -qE -- '-n lavish-watch( |$)' <<<"$TLOG" \
-    || fail "only the pr-watch window may fail: $TLOG"
 }
 
 t_req17_touched_scripts_shellcheck_clean() {
@@ -1122,8 +1119,8 @@ run "[fix-self-review-loop REQ-5] unreadable read warns and retries"    t_self_r
 run "[fix-self-review-loop REQ-6] attribution read is read-only"        t_self_req6_attribution_read_only_reads
 run "[fix-self-review-loop REQ-7] touched watcher shellcheck-clean"     t_self_req7_shellcheck_clean
 run "[fix-self-review-loop REQ-8] unreadable review does not starve others" t_self_req8_unreadable_review_does_not_starve_other_reviews
-run "[REQ-15] every spawn arms the pr-watch window"                    t_req15_every_spawn_arms_the_pr_watch_window
-run "[REQ-16] unstartable pr-watch window does not fail spawn"         t_req16_unstartable_pr_watch_window_does_not_fail_spawn
+run "[REQ-15] every spawn arms the unified watcher"                  t_req15_every_spawn_arms_the_unified_watcher
+run "[REQ-16] unstartable watch window does not fail spawn"           t_req16_unstartable_watch_window_does_not_fail_spawn
 run "[REQ-17] touched scripts shellcheck-clean"                        t_req17_touched_scripts_shellcheck_clean
 
 if [ "$failures" -gt 0 ]; then

@@ -373,9 +373,12 @@ t_req12_every_spawn_arms_the_child_watcher() {
   run_spawn "$fx"
   [ "$RC" -eq 0 ] || fail "spawn exit=$RC stderr=$ERR"
   grep -q 'new-window' "$fx/tmux/log" || fail "no watcher window created: $(cat "$fx/tmux/log")"
-  grep -q 'lavish-watch' "$fx/tmux/log" || fail "watcher window not named: $(cat "$fx/tmux/log")"
-  grep -qF 'sub-lavish-watch.sh' "$fx/tmux/log" || fail "watcher script not launched: $(cat "$fx/tmux/log")"
-  grep -qF 'watch:    lavish-watch window' <<<"$OUT" || fail "handles must report the watcher: $OUT"
+  grep -qE -- '-n watch( |$)' "$fx/tmux/log" || fail "watcher window not named watch: $(cat "$fx/tmux/log")"
+  grep -qF 'sub-watch.sh' "$fx/tmux/log" || fail "unified watcher not launched: $(cat "$fx/tmux/log")"
+  grep -qF 'SUB_WATCH_SERVICES=lavish' "$fx/tmux/log" \
+    || fail "the watcher must be armed with the Lavish service: $(cat "$fx/tmux/log")"
+  grep -qF 'watch:    watch window in pi-demo (services: lavish,pr,stall)' <<<"$OUT" \
+    || fail "handles must report the watcher: $OUT"
 
   local fx2="$SCRATCH/spawn-nowatch"
   make_spawn_fixture "$fx2"
@@ -393,7 +396,7 @@ t_req13_watcher_failure_does_not_fail_the_spawn() {
   printf 'no-new-window\n' > "$fx/tmux/mode"
   run_spawn "$fx"
   [ "$RC" -eq 0 ] || fail "spawn must succeed without the watcher, got exit=$RC stderr=$ERR"
-  grep -qF 'could not create the lavish-watch window' <<<"$ERR" \
+  grep -qF 'could not create the watch window' <<<"$ERR" \
     || fail "must warn about the missing watcher: $ERR"
   grep -qF 'watch:    unavailable' <<<"$OUT" || fail "handles must show the watcher unavailable: $OUT"
 }

@@ -86,7 +86,6 @@ WT=""
 CHILD_AGENT_DIR=""
 SESS_STARTED=0
 WATCH_STATE=""
-PR_WATCH_STATE=""
 cleanup_on_error() {
   local status=$?
   if [ "$status" -ne 0 ]; then
@@ -198,40 +197,40 @@ tmux_send_shell_line "$SESS" "$PI_LAUNCH" \
 info "Waiting ${PI_BOOT_DELAY}s for pi to boot ..."
 sleep "$PI_BOOT_DELAY"
 
-# 5b. Arm the per-child Lavish watcher: a dedicated window of the child's
-#     tmux session (so it stops when the session is killed on retirement)
-#     that wakes the child when review feedback is queued. Best effort —
-#     the child still works without it, but the wake loop is the feature, so
-#     a failed window warns loudly. Skippable with SUB_SPAWN_NO_WATCH=1.
+# 5b. Arm the per-child watcher: ONE window of the child's tmux session (so
+#     it stops when the session is killed on retirement) running the single
+#     watcher process that folds the three watching services — Lavish wake,
+#     PR events, and the free-provider stall detector. Best effort — the
+#     child still works without it, but the watching loop is the feature, so
+#     a failed window warns loudly. SUB_SPAWN_NO_WATCH=1 skips it; the
+#     service set is SUB_WATCH_SERVICES (default lavish,pr,stall) and
+#     SUB_SPAWN_NO_PR_WATCH=1 arms the watcher without the PR service.
 if [ "${SUB_SPAWN_NO_WATCH:-0}" = 1 ]; then
   WATCH_STATE="disabled (SUB_SPAWN_NO_WATCH=1)"
 else
-  WATCH_CMD=$(printf 'exec %q %q %q' "$SCRIPT_DIR/sub-lavish-watch.sh" "$TASK" "$ROOT")
-  if tmux new-window -d -t "=$SESS:" -n lavish-watch -c "$WT" "$WATCH_CMD" >/dev/null 2>&1; then
-    WATCH_STATE="lavish-watch window in $SESS"
-  else
-    WATCH_STATE="unavailable"
-    warn "could not create the lavish-watch window in $SESS — Lavish feedback will not wake this child automatically"
+  WATCH_SERVICES=${SUB_WATCH_SERVICES-lavish,pr,stall}
+  if [ "${SUB_SPAWN_NO_PR_WATCH:-0}" = 1 ]; then
+    # Remove the `pr` token from the comma-separated selection; duplicates
+    # and empty tokens are the watcher's business, so a plain token filter
+    # is enough.
+    WATCH_SERVICES=",${WATCH_SERVICES//[[:space:]]/},"
+    WATCH_SERVICES=${WATCH_SERVICES//,pr,/,,}
+    while [[ $WATCH_SERVICES == *,,* ]]; do WATCH_SERVICES=${WATCH_SERVICES//,,/,}; done
+    WATCH_SERVICES=${WATCH_SERVICES#,}
+    WATCH_SERVICES=${WATCH_SERVICES%,}
   fi
-fi
-
-# 5c. Arm the per-child PR watcher: a dedicated window of the child's tmux
-#     session (killed with the session on retirement) that polls the task
-#     branch read-only with gh and pushes merged / closed / review notices
-#     into the orchestrator through sub-report.sh. Same best-effort contract
-#     as the Lavish watcher above; it can be skipped alone with
-#     SUB_SPAWN_NO_PR_WATCH=1, or with everything via SUB_SPAWN_NO_WATCH=1.
-if [ "${SUB_SPAWN_NO_WATCH:-0}" = 1 ]; then
-  PR_WATCH_STATE="disabled (SUB_SPAWN_NO_WATCH=1)"
-elif [ "${SUB_SPAWN_NO_PR_WATCH:-0}" = 1 ]; then
-  PR_WATCH_STATE="disabled (SUB_SPAWN_NO_PR_WATCH=1)"
-else
-  PR_WATCH_CMD=$(printf 'exec %q %q %q %q' "$SCRIPT_DIR/sub-pr-watch.sh" "$TASK" "$ROOT" "$BRANCH")
-  if tmux new-window -d -t "=$SESS:" -n pr-watch -c "$WT" "$PR_WATCH_CMD" >/dev/null 2>&1; then
-    PR_WATCH_STATE="pr-watch window in $SESS"
+  if [ -z "$WATCH_SERVICES" ]; then
+    # Nothing left to watch: don't arm a window that would exit immediately.
+    WATCH_STATE="disabled (no service selected)"
   else
-    PR_WATCH_STATE="unavailable"
-    warn "could not create the pr-watch window in $SESS — PR events will not notify this child automatically"
+    WATCH_CMD=$(printf 'exec env SUB_WATCH_SERVICES=%q %q %q %q %q' \
+      "$WATCH_SERVICES" "$SCRIPT_DIR/sub-watch.sh" "$TASK" "$ROOT" "$BRANCH")
+    if tmux new-window -d -t "=$SESS:" -n watch -c "$WT" "$WATCH_CMD" >/dev/null 2>&1; then
+      WATCH_STATE="watch window in $SESS (services: ${WATCH_SERVICES:-none})"
+    else
+      WATCH_STATE="unavailable"
+      warn "could not create the watch window in $SESS — the child's watching services will not run automatically"
+    fi
   fi
 fi
 
@@ -255,7 +254,6 @@ info "  brief:    $TF"
 info "  report:   $RF"
 info "  launch:   ${CHILD_LAUNCH_FLAGS:-model/thinking inherited from settings}"
 info "  watch:    $WATCH_STATE"
-info "  pr-watch: $PR_WATCH_STATE"
 info "  scripts:  $SCRIPT_DIR"
 info ""
 info "--- pane tail ---"
