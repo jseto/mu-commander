@@ -86,6 +86,7 @@ WT=""
 CHILD_AGENT_DIR=""
 SESS_STARTED=0
 WATCH_STATE=""
+PR_WATCH_STATE=""
 cleanup_on_error() {
   local status=$?
   if [ "$status" -ne 0 ]; then
@@ -214,6 +215,26 @@ else
   fi
 fi
 
+# 5c. Arm the per-child PR watcher: a dedicated window of the child's tmux
+#     session (killed with the session on retirement) that polls the task
+#     branch read-only with gh and pushes merged / closed / review notices
+#     into the orchestrator through sub-report.sh. Same best-effort contract
+#     as the Lavish watcher above; it can be skipped alone with
+#     SUB_SPAWN_NO_PR_WATCH=1, or with everything via SUB_SPAWN_NO_WATCH=1.
+if [ "${SUB_SPAWN_NO_WATCH:-0}" = 1 ]; then
+  PR_WATCH_STATE="disabled (SUB_SPAWN_NO_WATCH=1)"
+elif [ "${SUB_SPAWN_NO_PR_WATCH:-0}" = 1 ]; then
+  PR_WATCH_STATE="disabled (SUB_SPAWN_NO_PR_WATCH=1)"
+else
+  PR_WATCH_CMD=$(printf 'exec %q %q %q %q' "$SCRIPT_DIR/sub-pr-watch.sh" "$TASK" "$ROOT" "$BRANCH")
+  if tmux new-window -d -t "=$SESS:" -n pr-watch -c "$WT" "$PR_WATCH_CMD" >/dev/null 2>&1; then
+    PR_WATCH_STATE="pr-watch window in $SESS"
+  else
+    PR_WATCH_STATE="unavailable"
+    warn "could not create the pr-watch window in $SESS — PR events will not notify this child automatically"
+  fi
+fi
+
 # 6. Live viewer pane in the invoking tmux window (falling back to a
 #    detached viewer window when there is no invoking pane). A viewer problem
 #    must never fail the spawn: the EXIT trap would release the worktree.
@@ -234,6 +255,7 @@ info "  brief:    $TF"
 info "  report:   $RF"
 info "  launch:   ${CHILD_LAUNCH_FLAGS:-model/thinking inherited from settings}"
 info "  watch:    $WATCH_STATE"
+info "  pr-watch: $PR_WATCH_STATE"
 info "  scripts:  $SCRIPT_DIR"
 info ""
 info "--- pane tail ---"
