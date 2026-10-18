@@ -60,9 +60,9 @@ lease_alive() { # $1=task $2=repo-root
 
 # Read the branch's most relevant PR (an open one first, else the first
 # listed) as compact JSON
-# `{number,url,state,reviews:[{login,state,submittedAt}]}`; nothing when the
-# branch has no PR. Returns non-zero only when gh is missing or the read
-# failed — "no PR yet" is a valid state the watcher keeps watching. Only
+# `{number,url,state,reviews:[{id,login,state,submittedAt,body}]}`; nothing
+# when the branch has no PR. Returns non-zero only when gh is missing or the
+# read failed — "no PR yet" is a valid state the watcher keeps watching. Only
 # read-only `gh pr list` queries; nothing here mutates GitHub.
 read_pr() { # $1=branch $2=repo-root
   local branch=$1 root=$2 out pr
@@ -91,9 +91,11 @@ read_pr() { # $1=branch $2=repo-root
                  | select(.state == "APPROVED"
                           or .state == "CHANGES_REQUESTED"
                           or .state == "COMMENTED")
-                 | { login: (.author.login // "unknown"),
+                 | { id: (.id // ""),
+                     login: (.author.login // "unknown"),
                      state,
-                     submittedAt: (.submittedAt // "") } ] }' <<<"$pr"
+                     submittedAt: (.submittedAt // ""),
+                     body: (.body // "") } ] }' <<<"$pr"
 }
 
 # Identity of one submitted review for deduplication. A reviewer's later
@@ -101,6 +103,50 @@ read_pr() { # $1=branch $2=repo-root
 # again — only the exact same submission is one notice.
 review_signature() { # $1=review JSON
   jq -r '"\(.login)|\(.state)|\(.submittedAt)"' <<<"$1"
+}
+
+# Read-only GraphQL query for one review's comments: the watcher needs to
+# know whether any comment is top-level (no replyTo). $id is a GraphQL
+# variable placeholder, not a shell expansion.
+# shellcheck disable=SC2016
+_PR_REVIEW_COMMENTS_QUERY='query=query($id: ID!) { node(id: $id) { ... on PullRequestReview { comments(first: 100) { nodes { replyTo { id } } } } } }'
+
+# Classify one submitted review for the watcher: actionable | self-reply |
+# unreadable.
+#
+# The child and the reviewer share the `gh` identity, so author login cannot
+# attribute a review. What the API does distinguish is a *submitted review*
+# from a *reply to an existing review thread*: GitHub records a reply as a
+# synthetic COMMENTED review with an empty body whose only comment carries
+# `replyTo`. Notifying such a review routes the child's own words back to the
+# child, which replies again — a self-sustaining loop (2026-10-18, riak-t
+# PR #263). APPROVED / CHANGES_REQUESTED are never produced by a reply; a
+# COMMENTED review with a non-empty body is a submission; a COMMENTED review
+# with an empty body is decided by one read-only GraphQL query for its
+# comments. A failed or unparsable read is 'unreadable' — never a notice.
+review_disposition() { # $1=review JSON $2=repo-root
+  local state body id top
+  state=$(jq -r '.state' <<<"$1")
+  if [ "$state" != COMMENTED ]; then printf 'actionable'; return 0; fi
+  body=$(jq -r '.body // ""' <<<"$1")
+  if [ -n "${body//[[:space:]]/}" ]; then printf 'actionable'; return 0; fi
+  id=$(jq -r '.id // ""' <<<"$1")
+  if [ -z "$id" ]; then printf 'unreadable'; return 0; fi
+  # Read-only node query: how many of the review's comments are top-level
+  # (no replyTo)? A page is enough — a review with more than 100 comments is
+  # not a shape the review workflow produces.
+  if ! top=$(cd "$2" && gh api graphql \
+               -f "$_PR_REVIEW_COMMENTS_QUERY" \
+               -f "id=$id" \
+               --jq '[.data.node.comments.nodes[] | select(.replyTo == null)] | length' \
+               2>/dev/null); then
+    printf 'unreadable'; return 0
+  fi
+  case $top in
+    ''|*[!0-9]*) printf 'unreadable' ;;
+    0)           printf 'self-reply' ;;
+    *)           printf 'actionable' ;;
+  esac
 }
 
 # Epoch of the last notice attempt, kept monotonic (two attempts can land in
@@ -205,8 +251,9 @@ main() {
     die "PR_WATCH_TICKS must be a non-negative integer: $max_ticks"
   fi
   local -A seen_reviews=()
-  local next_attempt=0 ticks=0 warned_read=0 warned_lease=0
-  local pr state number url now review sig login rstate
+  local -A review_retry_after=()   # sig -> epoch before which an unreadable review is not re-read
+  local next_attempt=0 ticks=0 warned_read=0 warned_lease=0 warned_review=0
+  local pr state number url now review sig login rstate rid disposition
   local -a reviews=()
 
   info "watching PR for '$task' on branch '$branch' (session $sess)"
@@ -269,6 +316,33 @@ main() {
           if [ -n "${seen_reviews[$sig]:-}" ]; then continue; fi
           now=$(date +%s)
           if [ "$now" -lt "$next_attempt" ]; then break; fi
+          if [ "${review_retry_after[$sig]:-0}" -gt "$now" ]; then continue; fi
+          # A COMMENTED review that is only a reply to an existing thread is
+          # the child's own words (or any in-thread reply): nothing to route,
+          # and notifying it would loop the child back onto itself. Record it
+          # handled so later scans neither notify nor re-read it. An
+          # unreadable attribution is never a notice and stays unrecorded; it
+          # is retried after the retry delay, and only it — a poisoned read
+          # must not stop the later reviews of the same scan from being
+          # notified (they need no attribution read at all).
+          disposition=$(review_disposition "$review" "$root")
+          case $disposition in
+            self-reply)
+              rid=$(jq -r '.id // ""' <<<"$review")
+              seen_reviews[$sig]=1
+              info "review ${rid:-$sig} is a reply to an existing thread; not notifying"
+              warned_review=0
+              continue ;;
+            unreadable)
+              if [ "$warned_review" = 0 ]; then
+                warn "could not read the review comments for '$task'; will retry"
+                warned_review=1
+              fi
+              review_retry_after[$sig]=$(( now + retry ))
+              continue ;;
+            *)
+              warned_review=0 ;;
+          esac
           login=$(jq -r '.login' <<<"$review")
           rstate=$(jq -r '.state' <<<"$review")
           new_epoch

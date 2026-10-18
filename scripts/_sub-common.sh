@@ -383,6 +383,17 @@ _shell_unescape() { # $1=text
 # that matched neither form only costs a retype, never a false success.
 _PI_PROBE_TAIL=60
 _PI_PROBES=()
+# Head probe for pi's pending-message display. While a turn is running, pi
+# queues a submitted message as a steering message and renders it as ONE line
+# truncated to the pane width (`Steering: <message>…`, TruncatedText(text, 1,
+# 0)), so the tail probe can never match a queued line. The message's HEAD is
+# visible, and _PI_HEAD_PROBE flattened characters of it are enough to tell a
+# queued line from unrelated content while staying inside the truncated prefix
+# even on a narrow (~40 column) orchestrator pane. A head alone is not an
+# identity — two notices on the same PR share it — so the caller also requires
+# that the queued copy is new to this send (_pi_pending_head_count).
+_PI_HEAD_PROBE=20
+_PI_HEAD_PROBES=()
 
 # Set the probe set for a typed line: flattened, tail-clamped, duplicates
 # dropped, the literal form first.
@@ -411,6 +422,51 @@ _has_probe() { # $1=text
     grep -qF -- "$p" <<<"$1" && return 0
   done
   return 1
+}
+
+# Set the head-probe set for a typed line: the first _PI_HEAD_PROBE flattened
+# characters of each probe form, duplicates dropped, the literal form first.
+_set_head_probes() { # $1=text
+  local form head dup='' existing
+  _PI_HEAD_PROBES=()
+  for form in "$(_flatten "$1")" "$(_flatten "$(_shell_unescape "$1")")"; do
+    [ -n "$form" ] || continue
+    # ${var:0:n} yields the whole string when the form is shorter than n.
+    head=${form:0:$_PI_HEAD_PROBE}
+    dup=''
+    for existing in ${_PI_HEAD_PROBES[@]+"${_PI_HEAD_PROBES[@]}"}; do
+      if [ "$existing" = "$head" ]; then dup=1; break; fi
+    done
+    [ -n "$dup" ] || _PI_HEAD_PROBES+=("$head")
+  done
+  return 0
+}
+
+# True when any head-probe form appears in already-flattened text $1. $1 is
+# pi's pending display, one flattened queued message per line; grep matches
+# line by line, so a head can never be assembled across two queued messages.
+_has_head_probe() { # $1=text
+  local p
+  for p in ${_PI_HEAD_PROBES[@]+"${_PI_HEAD_PROBES[@]}"}; do
+    grep -qF -- "$p" <<<"$1" && return 0
+  done
+  return 1
+}
+
+# Number of lines in pi's already-flattened pending display $1 that match a
+# head-probe form — i.e. the queued copies of this message. The caller
+# compares it before and after typing: only a copy THIS send added may confirm
+# it, so an older queued message whose visible head merely collides with this
+# line's head can never pass for the send. The maximum across probe forms is
+# deliberate: each form matches whole lines, and two forms of one message are
+# the same queued line, not two copies.
+_pi_pending_head_count() { # $1=text
+  local p c n=0
+  for p in ${_PI_HEAD_PROBES[@]+"${_PI_HEAD_PROBES[@]}"}; do
+    c=$(grep -cF -- "$p" <<<"$1" 2>/dev/null || true)
+    if [ "$c" -gt "$n" ]; then n=$c; fi
+  done
+  printf '%s' "$n"
 }
 
 # True when a probe is visible anywhere in the pane, polling a bounded
@@ -453,7 +509,7 @@ _PI_VANISH_RECHECK=0.2
 
 # Region globals, so a predicate can never read an unset variable (callers run
 # with set -u) before a parse filled them in.
-_pi_layout='' _pi_comp='' _pi_trans='' _pi_below='' _pi_all=''
+_pi_layout='' _pi_comp='' _pi_trans='' _pi_below='' _pi_all='' _pi_pending=''
 
 # True when a pane line is nothing but box-drawing dashes — pi's status
 # border. Byte-exact dash stripping keeps this locale-independent (the system
@@ -478,6 +534,20 @@ _pi_chrome_row() { # $1=pane line
   if _pi_dash_row "$1"; then return 0; fi
   case $s in
     ─*⠋*|─*⠙*|─*⠹*|─*⠸*|─*⠼*|─*⠴*|─*⠦*|─*⠧*|─*⠇*|─*⠏*) return 0 ;;
+  esac
+  return 1
+}
+
+# True when a pane line is one of pi's pending-message display entries: a
+# `Steering: <text>` line (a message queued behind a running turn) or a
+# `Follow-up: <text>` line. Such a line has left the composer and is delivery
+# of its own kind (_pi_pending_holds), so it is neither transcript content
+# (the transcript region must not confirm a queued message's full text or
+# stand in for its truncated head) nor composer content.
+_pi_pending_row() { # $1=pane line
+  local s=${1#"${1%%[![:space:]]*}"}
+  case $s in
+    'Steering: '*|'Follow-up: '*) return 0 ;;
   esac
   return 1
 }
@@ -513,10 +583,21 @@ _pi_chrome_row() { # $1=pane line
 # evidence", never as success.
 _pi_parse_regions() {
   local -a L=()
-  local last=-1 b=-1 top j i n s
-  _pi_layout=0 _pi_comp='' _pi_trans='' _pi_below='' _pi_all=''
+  local last=-1 b=-1 top j i n s line
+  _pi_layout=0 _pi_comp='' _pi_trans='' _pi_below='' _pi_all='' _pi_pending=''
   mapfile -t L
   _pi_all=$(printf '%s\n' "${L[@]}" | tr -d '[:space:]')
+  # pi's pending-message display: one `Steering: <text>` (or `Follow-up: `)
+  # line per message queued behind a running turn. A line shown there has
+  # left the composer and will be injected as a turn — a delivery region of
+  # its own (_pi_pending_holds) — flattened per line, with pi's marker
+  # stripped, so a head probe can never match across two queued messages.
+  for line in ${L[@]+"${L[@]}"}; do
+    if _pi_pending_row "$line"; then
+      line=${line#"${line%%[![:space:]]*}"}
+      _pi_pending+=$(printf '%s' "${line#*: }" | tr -d '[:space:]')$'\n'
+    fi
+  done
   for (( i = ${#L[@]} - 1; i >= 0; i-- )); do
     if [[ ${L[i]} == *[![:space:]]* ]]; then last=$i; break; fi
   done
@@ -557,7 +638,14 @@ _pi_parse_regions() {
     done
   fi
   for (( i = top; i < b; i++ )); do _pi_comp+=${L[i]}; done
-  for (( i = 0; i < top; i++ )); do _pi_trans+=${L[i]}; done
+  for (( i = 0; i < top; i++ )); do
+    # A pending line is a delivery region of its own: leaving it in the
+    # transcript would let the full text of a short queued message satisfy
+    # _pi_submission_evidence, and the pending region already answers whether
+    # a queued copy belongs to this send.
+    _pi_pending_row "${L[i]}" && continue
+    _pi_trans+=${L[i]}
+  done
   for (( i = b + 1; i < ${#L[@]}; i++ )); do _pi_below+=${L[i]}; done
   _pi_comp=$(printf '%s' "$_pi_comp" | tr -d '[:space:]')
   _pi_trans=$(printf '%s' "$_pi_trans" | tr -d '[:space:]')
@@ -573,7 +661,7 @@ _pi_regions_of() { # $1=tmux target
   if cap=$(tmux capture-pane -t "$1" -p 2>/dev/null); then
     _pi_parse_regions <<<"$cap"
   else
-    _pi_layout=0 _pi_comp='' _pi_trans='' _pi_below='' _pi_all=''
+    _pi_layout=0 _pi_comp='' _pi_trans='' _pi_below='' _pi_all='' _pi_pending=''
   fi
   return 0
 }
@@ -582,6 +670,29 @@ _pi_regions_of() { # $1=tmux target
 # is parked (unsent). Needs a recognized layout; "no evidence" is false.
 _pi_composer_holds() {
   [ "$_pi_layout" = 1 ] && _has_probe "$_pi_comp"
+}
+
+# True when the pane shows the line in pi's pending-message display: it left
+# the composer, pi accepted it into the steering queue, and it will be
+# injected as a turn. That is the delivered-PENDING state of a send — the
+# only evidence available while the orchestrator is mid-turn, because pi
+# truncates the queued message to one line and the tail probe can never
+# match. Confirming it is what keeps an unconfirmed-notice retry from
+# appending the same notice to the queue again and again (2026-10-18).
+#
+# A copy still in the composer blocks the evidence whatever the pending
+# display shows: a parked line was never delivered, and an older queued copy
+# of the same message must not confirm it. Both probe sets are checked — pi's
+# editor scrolls a long typed line, so either its head or its tail is the
+# visible part. "Holds" does not by itself mean THIS send queued the line:
+# the caller compares _pi_pending_head_count across the send, so a pre-existing
+# same-head pending copy cannot confirm it (test [REQ-8]).
+_pi_pending_holds() {
+  [ "$_pi_layout" = 1 ] || return 1
+  [ -n "$_pi_pending" ] || return 1
+  _has_probe "$_pi_comp" && return 1
+  _has_head_probe "$_pi_comp" && return 1
+  _has_head_probe "$_pi_pending"
 }
 
 # True when the pane shows submission evidence for the line: it left the
@@ -674,7 +785,7 @@ _pi_unresolved_pi_pane() { # $1=flattened capture
 # nobody submits is not.
 tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds] [expectation]
   local target=$1 text=$2 attempts=${3:-4} settle=${4:-1} expect=${5:-auto}
-  local before after i strict=0 retyped=0 typed=0 entered=0
+  local before after i strict=0 retyped=0 typed=0 entered=0 pending_before
   # An unknown expectation is a caller bug, and degrading it to 'auto' would
   # reproduce the very failure this argument exists to prevent (2026-10-18):
   # a typo would silently drop the shell confirmation.
@@ -685,6 +796,9 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds] [expecta
   # Evidence is looked for in both the literal typed text and the form the
   # shell hands to the program: pi never sees the backslashes (see _set_probes).
   _set_probes "$text"
+  # The pending display truncates a queued message to one line, so it is
+  # matched by the head probes instead (see _set_head_probes).
+  _set_head_probes "$text"
   if [ -z "${_PI_PROBES[0]:-}" ]; then
     warn "nothing to send to $target (empty line)"
     return 1
@@ -726,6 +840,11 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds] [expecta
     fi
   fi
   before=$_pi_all   # baseline from the decision capture (same pane, no re-capture)
+  # How many queued copies of this line the pending display already held
+  # BEFORE this send's Enters: only growth beyond it may confirm the send, so
+  # an older message whose head merely collides with this one never passes for
+  # it (nothing else about a truncated pending line identifies a send).
+  pending_before=$(_pi_pending_head_count "$_pi_pending")
   for (( i = 0; i < attempts; i++ )); do
     tmux send-keys -t "$target" Enter
     entered=$((entered + 1))
@@ -748,6 +867,19 @@ tmux_send_line() { # $1=tmux target $2=text [attempts] [settle seconds] [expecta
       if [ "$_pi_layout" = 1 ]; then
         # Positive evidence: the line left the composer and reached the transcript.
         if _pi_submission_evidence; then
+          return 0
+        fi
+        # Queued behind a running turn: the line left the composer and pi's
+        # pending display shows its head. The message is not lost — pi injects
+        # it as a turn — so this is delivery, and confirming it here is what
+        # stops a retry from appending the same notice to the queue again.
+        # Checked before the vanish path: a queued line IS gone from the pane
+        # as far as the tail probe can tell, and must not be re-typed.
+        # The head alone is not enough: the queued copy must be one this send
+        # added (count above the pre-Enter baseline), or an older same-head
+        # message would confirm a line that actually vanished.
+        if _pi_pending_holds \
+           && [ "$(_pi_pending_head_count "$_pi_pending")" -gt "$pending_before" ]; then
           return 0
         fi
         # Gone from the whole pane without ever reaching the transcript:

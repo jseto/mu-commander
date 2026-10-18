@@ -48,9 +48,13 @@ setup_fakes() {
 #   ok                  normal
 #   drop-enter          Enter is swallowed (the send can never be confirmed)
 #   no-pr-watch-window  only the pr-watch window is refused
+#   steer               the main pane is a pi TUI mid-turn: Enter queues the
+#                       submitted text as ONE truncated pending `Steering:`
+#                       line instead of a transcript entry (the 2026-10-18
+#                       duplicate-notice incident)
 set -u
 S=${FAKE_TMUX_DIR:?FAKE_TMUX_DIR not set}
-mkdir -p "$S/panes" "$S/sessions" "$S/windows"
+mkdir -p "$S/panes" "$S/sessions" "$S/windows" "$S/pending" "$S/transcript"
 [ -f "$S/log" ] || : > "$S/log"
 [ -f "$S/mode" ] || printf 'ok\n' > "$S/mode"
 mode=$(cat "$S/mode")
@@ -95,9 +99,19 @@ case "$cmd" in
       esac
     done
     p=$(pane_of "$target")
+    n=$(norm "$target")
     [ -e "$p" ] || : > "$p"
     if [ "$literal" = 1 ]; then
       printf '%s' "$text" >> "$p"
+    elif [ "$mode" = steer ]; then
+      # pi's steering queue while a turn runs: the pending display renders the
+      # message as one line truncated to the pane width (TruncatedText(text,
+      # 1, 0)), so the notice's tail marker never renders.
+      if [ -s "$p" ]; then
+        queued=$(cat "$p")
+        printf '%s...\n' "${queued:0:24}" >> "$S/pending/$n"
+        : > "$p"
+      fi
     elif [ "$mode" != drop-enter ]; then
       printf '\n[enter]\n' >> "$p"
     fi ;;
@@ -107,7 +121,24 @@ case "$cmd" in
       case "$1" in -t) target=${2:-}; shift 2 ;; *) shift ;; esac
     done
     p=$(pane_of "$target")
+    n=$(norm "$target")
     [ -e "$p" ] || exit 1
+    if [ "$mode" = steer ]; then
+      # A pi TUI mid-turn: transcript, pending ("Steering: <head>…", the
+      # dequeue hint), working row, composer, status border, path, stats.
+      [ -s "$S/transcript/$n" ] && cat "$S/transcript/$n"
+      if [ -s "$S/pending/$n" ]; then
+        printf '\n'
+        while IFS= read -r q; do printf 'Steering: %s\n' "$q"; done < "$S/pending/$n"
+        printf '↳ Alt+Up to edit all queued messages\n'
+      fi
+      printf '\n── ⠴ Working ────────────────────────────────────────────────────\n'
+      if [ -s "$p" ]; then cat "$p"; printf '\n'; else printf '\n'; fi
+      printf '%s\n' '────────────────────────────────────────────────────────────────────'
+      printf '%s\n' '/test/worktree (task/demo)'
+      printf 'stats line\n'
+      exit 0
+    fi
     cat "$p" ;;
   display-message) printf 'pi\n' ;;
   list-windows) : ;;
@@ -131,9 +162,13 @@ EOS
   cat > "$BINDIR/gh" <<'EOS'
 #!/usr/bin/env bash
 # Fake gh: logs every invocation (so a test can prove only read-only queries
-# happened) and serves the fixture PR-list JSON. $FAKE_GH_FAIL names a marker
-# file whose presence makes the read fail, like a missing login or a network
-# error.
+# happened) and serves the fixture PR-list JSON plus the read-only review
+# attribution query. $FAKE_GH_FAIL names a marker file whose presence makes
+# every read fail, like a missing login or a network error;
+# $FAKE_GH_GRAPHQL_FAIL makes only the review-comments query fail.
+# $FAKE_GH_GRAPHQL_STATE is a JSON object mapping a review node id to the
+# number of top-level comments that review has; an id not listed counts as 1
+# (a normal submitted review carries a top-level comment).
 set -u
 printf '%s\n' "$*" >> "${FAKE_GH_LOG:-/dev/null}"
 [ -n "${FAKE_GH_FAIL:-}" ] && [ -e "$FAKE_GH_FAIL" ] && exit 1
@@ -143,6 +178,20 @@ case "${1:-}" in
     case "${1:-}" in
       list)
         cat "${FAKE_GH_STATE:?FAKE_GH_STATE not set}"
+        exit 0 ;;
+    esac ;;
+  api)
+    shift
+    case "${1:-}" in
+      graphql)
+        shift
+        id=
+        while [ "$#" -gt 0 ]; do
+          case "$1" in id=*) id=${1#id=} ;; esac
+          shift
+        done
+        [ -n "${FAKE_GH_GRAPHQL_FAIL:-}" ] && [ -e "$FAKE_GH_GRAPHQL_FAIL" ] && exit 1
+        jq -r --arg id "$id" '.[$id] // 1' "${FAKE_GH_GRAPHQL_STATE:?FAKE_GH_GRAPHQL_STATE not set}"
         exit 0 ;;
     esac ;;
 esac
@@ -186,9 +235,10 @@ EOS
 # Fixtures
 # ---------------------------------------------------------------------------
 
-review_json() { # $1=login $2=state $3=submittedAt -> one review object
-  jq -cn --arg l "$1" --arg s "$2" --arg t "$3" \
-    '{author:{login:$l},state:$s,submittedAt:$t}'
+review_json() { # $1=login $2=state $3=submittedAt [$4=body] [$5=node id] -> one review object
+  jq -cn --arg l "$1" --arg s "$2" --arg t "$3" --arg b "${4:-}" \
+        --arg i "${5:-PRR_${1}_${3}}" \
+    '{id:$i,author:{login:$l},body:$b,state:$s,submittedAt:$t}'
 }
 
 reviews_json() { # zero or more review JSON strings -> array
@@ -219,6 +269,7 @@ new_watch_case() { # $1=unique case id
   mkdir -p "$WT"
   TMUX_DIR="$CASE/tmux"
   mkdir -p "$TMUX_DIR/sessions" "$TMUX_DIR/panes" "$TMUX_DIR/windows"
+  mkdir -p "$TMUX_DIR/pending" "$TMUX_DIR/transcript"
   : > "$TMUX_DIR/log"
   printf 'ok\n' > "$TMUX_DIR/mode"
   : > "$TMUX_DIR/sessions/$SESS"
@@ -230,6 +281,9 @@ new_watch_case() { # $1=unique case id
   GH_LOG="$CASE/gh.log"
   : > "$GH_LOG"
   GH_FAIL="$CASE/gh-fail"
+  GH_GRAPHQL_STATE="$CASE/review-comments.json"
+  printf '{}\n' > "$GH_GRAPHQL_STATE"
+  GH_GRAPHQL_FAIL="$CASE/gh-graphql-fail"
   TH_STATE="$CASE/leases.json"
   TH_FAIL="$CASE/th-fail"
   printf '[{"path":"%s","lease_holder":"%s"}]\n' "$WT" "$TASK" > "$TH_STATE"
@@ -249,6 +303,8 @@ run_watcher() {
         FAKE_GH_STATE="$GH_STATE" \
         FAKE_GH_LOG="$GH_LOG" \
         FAKE_GH_FAIL="$GH_FAIL" \
+        FAKE_GH_GRAPHQL_STATE="$GH_GRAPHQL_STATE" \
+        FAKE_GH_GRAPHQL_FAIL="$GH_GRAPHQL_FAIL" \
         FAKE_TREEHOUSE_STATE="$TH_STATE" \
         FAKE_TREEHOUSE_FAIL="$TH_FAIL" \
         FAKE_WT="$WT" \
@@ -313,6 +369,8 @@ delivered_count() { grep -cF 'notice delivered' <<<"$OUT" || true; }
 literal_send_count() { grep -cE '^send-keys .* -l ' <<<"$TLOG" || true; }
 enter_count() { grep -cE '^send-keys .* Enter$' <<<"$TLOG" || true; }
 gh_list_count() { grep -cE '^pr list( |$)' <<<"$GHLOG" || true; }
+# Review-comment attribution reads (fix-self-review-loop).
+graphql_count() { grep -cE '^api graphql ' <<<"$GHLOG" || true; }
 epoch_count() { grep -oE '\[pr-watch [0-9]+\]' <<<"$TLOG" | sort -u | wc -l; }
 pane_epoch_count() { grep -oE '\[pr-watch [0-9]+\]' <<<"$MAIN_PANE_TEXT" | sort -u | wc -l; }
 
@@ -591,8 +649,8 @@ t_req12_watcher_only_observes_and_only_types_the_notice() {
   run_watcher
   [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
   [ -n "$GHLOG" ] || fail "expected the watcher to read the PR"
-  if grep -Evq '^pr list( |$)' <<<"$GHLOG"; then
-    fail "every gh call must be a read-only pr list: $GHLOG"
+  if grep -Evq '^(pr list( |$)|api graphql( |$))' <<<"$GHLOG"; then
+    fail "every gh call must be a read-only query: $GHLOG"
   fi
   grep -qF -- '--head task/demo' <<<"$GHLOG" \
     || fail "the gh read must query the child's branch: $GHLOG"
@@ -694,6 +752,223 @@ t_supp_missing_headrefname_uses_the_requested_branch() {
   [ "$(delivered_count)" -eq 1 ] \
     || fail "a gh result without headRefName must fall back to the requested branch: $OUT"
   grep -qF 'carol' <<<"$MAIN_PANE_TEXT" || fail "review notice expected: $MAIN_PANE_TEXT"
+}
+
+# [fix-pending-notice REQ-5] the 2026-10-18 flood: the orchestrator is
+# mid-turn, so pi queues the review notice as a truncated steering message.
+# The queued delivery is confirmed and recorded, so later scans do not retype
+# it into the orchestrator's queue again.
+t_pending_req5_queued_review_notice_is_delivered_once() {
+  jq_ok || return 0
+  new_watch_case pending-review
+  write_pr "$GH_STATE" 51 OPEN "$BRANCH" \
+    "$(reviews_json "$(review_json alice CHANGES_REQUESTED 2026-10-18T10:00:00Z)")"
+  printf 'steer\n' > "$TMUX_DIR/mode"
+  W_TICKS=5
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 1 ] \
+    || fail "the queued notice must be claimed delivered exactly once: $OUT"
+  [ "$(literal_send_count)" -eq 1 ] \
+    || fail "the notice must not be retyped after a queued delivery: $TLOG"
+  [ "$(gh_list_count)" -ge 3 ] || fail "the watcher must keep scanning after it: $GHLOG"
+  [ "$(wc -l < "$TMUX_DIR/pending/$MAIN_SESS")" -eq 1 ] \
+    || fail "exactly one queued copy expected: $(cat "$TMUX_DIR/pending/$MAIN_SESS")"
+  grep -qF 'PR #51' "$TMUX_DIR/pending/$MAIN_SESS" \
+    || fail "the queued head must name the reviewed PR: $(cat "$TMUX_DIR/pending/$MAIN_SESS")"
+  if grep -qE 'WARNING|ERROR' <<<"$ERR"; then
+    fail "a queued delivery must not warn or fail: $ERR"
+  fi
+}
+
+# [fix-pending-notice REQ-6] a terminal notice queued behind a busy
+# orchestrator is delivered exactly once, and the watcher exits 0 right after
+# the confirmed queued delivery — no second copy on a later scan.
+t_pending_req6_queued_merged_notice_is_delivered_once() {
+  jq_ok || return 0
+  new_watch_case pending-merged
+  write_pr "$GH_STATE" 52 MERGED "$BRANCH" "$(reviews_json)"
+  printf 'steer\n' > "$TMUX_DIR/mode"
+  W_TICKS=20
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 1 ] \
+    || fail "exactly one merged notice expected: $OUT"
+  [ "$(literal_send_count)" -eq 1 ] \
+    || fail "the merged notice must not be retyped: $TLOG"
+  [ "$(gh_list_count)" -eq 1 ] \
+    || fail "the watcher must exit after the confirmed queued delivery: $GHLOG"
+  [ "$(wc -l < "$TMUX_DIR/pending/$MAIN_SESS")" -eq 1 ] \
+    || fail "exactly one queued copy expected: $(cat "$TMUX_DIR/pending/$MAIN_SESS")"
+  grep -qF 'PR #52' "$TMUX_DIR/pending/$MAIN_SESS" \
+    || fail "the queued head must name the merged PR: $(cat "$TMUX_DIR/pending/$MAIN_SESS")"
+}
+
+# ---------------------------------------------------------------------------
+# fix-self-review-loop: a child's own review replies
+# (specs/fix-self-review-loop/fix-self-review-loop.feature)
+# ---------------------------------------------------------------------------
+
+# [fix-self-review-loop REQ-1] the PR #263 shape: a human COMMENTED review
+# with a top-level inline comment, then the child's reply recorded as a second
+# COMMENTED review whose only comment replies to that thread. Only the human
+# review may be notified; the reply is recorded handled and never re-read.
+t_self_req1_reply_only_review_is_not_notified() {
+  jq_ok || return 0
+  new_watch_case self-reply
+  write_pr "$GH_STATE" 61 OPEN "$BRANCH" \
+    "$(reviews_json \
+        "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z '' PRR_human)" \
+        "$(review_json jseto COMMENTED 2026-10-18T18:04:27Z '' PRR_child)")"
+  printf '{"PRR_child":0}\n' > "$GH_GRAPHQL_STATE"
+  W_TICKS=4
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 1 ] \
+    || fail "only the submitted review may be notified: $OUT"
+  [ "$(literal_send_count)" -eq 1 ] || fail "exactly one notice expected: $TLOG"
+  grep -qF 'got a COMMENTED review from jseto' <<<"$MAIN_PANE_TEXT" \
+    || fail "the submitted review must be notified: $MAIN_PANE_TEXT"
+  grep -qF 'is a reply to an existing thread; not notifying' <<<"$OUT" \
+    || fail "the reply review must be reported handled: $OUT"
+  grep -qF 'PRR_child' <<<"$OUT" || fail "the skip must name the reply review: $OUT"
+  [ "$(graphql_count)" -eq 2 ] \
+    || fail "each unseen COMMENTED review is read exactly once: $GHLOG"
+  [ "$(grep -cF 'id=PRR_child' <<<"$GHLOG")" -eq 1 ] \
+    || fail "the recorded reply must not be re-read on later scans: $GHLOG"
+}
+
+# [fix-self-review-loop REQ-2] a COMMENTED review that carries a top-level
+# inline comment (no replyTo) is a submitted review and is notified.
+t_self_req2_top_level_commented_review_is_notified() {
+  jq_ok || return 0
+  new_watch_case self-top-level
+  write_pr "$GH_STATE" 62 OPEN "$BRANCH" \
+    "$(reviews_json "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z '' PRR_top)")"
+  printf '{"PRR_top":1}\n' > "$GH_GRAPHQL_STATE"
+  W_TICKS=2
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 1 ] \
+    || fail "the top-level COMMENTED review must be notified: $OUT"
+  [ "$(literal_send_count)" -eq 1 ] || fail "one notice expected: $TLOG"
+  grep -qF 'got a COMMENTED review from jseto' <<<"$MAIN_PANE_TEXT" \
+    || fail "notice expected: $MAIN_PANE_TEXT"
+  [ "$(graphql_count)" -eq 1 ] || fail "exactly one attribution read expected: $GHLOG"
+}
+
+# [fix-self-review-loop REQ-3] a COMMENTED review with a review body is a
+# submission: notified without any review-comments read.
+t_self_req3_review_body_needs_no_comment_read() {
+  jq_ok || return 0
+  new_watch_case self-body
+  write_pr "$GH_STATE" 63 OPEN "$BRANCH" \
+    "$(reviews_json "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z 'Some thoughts on the diff' PRR_body)")"
+  W_TICKS=2
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 1 ] || fail "the body review must be notified: $OUT"
+  [ "$(graphql_count)" -eq 0 ] || fail "a review body needs no comments read: $GHLOG"
+}
+
+# [fix-self-review-loop REQ-4] APPROVED / CHANGES_REQUESTED can never be a
+# reply: notified without any attribution read.
+t_self_req4_non_commented_reviews_need_no_comment_read() {
+  jq_ok || return 0
+  new_watch_case self-states
+  write_pr "$GH_STATE" 64 OPEN "$BRANCH" \
+    "$(reviews_json \
+        "$(review_json alice APPROVED 2026-10-18T10:00:00Z)" \
+        "$(review_json bob CHANGES_REQUESTED 2026-10-18T10:05:00Z)")"
+  W_TICKS=2
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  [ "$(delivered_count)" -eq 2 ] || fail "both reviews must be notified: $OUT"
+  [ "$(graphql_count)" -eq 0 ] || fail "no attribution read expected: $GHLOG"
+}
+
+# [fix-self-review-loop REQ-5] a failed attribution read is never a notice and
+# is retried: the review is notified once the read recovers.
+t_self_req5_unreadable_read_warns_and_retries() {
+  jq_ok || return 0
+  new_watch_case self-unreadable
+  write_pr "$GH_STATE" 65 OPEN "$BRANCH" \
+    "$(reviews_json "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z '' PRR_retry)")"
+  printf '{"PRR_retry":1}\n' > "$GH_GRAPHQL_STATE"
+  : > "$GH_GRAPHQL_FAIL"
+  (
+    sleep 0.5
+    rm -f "$GH_GRAPHQL_FAIL"
+  ) &
+  local mutator=$!
+  W_TICKS=8
+  run_watcher
+  wait "$mutator" 2>/dev/null || true
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF 'could not read the review comments' <<<"$ERR" \
+    || fail "a failed attribution read must warn: $ERR"
+  [ "$(delivered_count)" -eq 1 ] \
+    || fail "the recovered read must notify the review exactly once: $OUT"
+  [ "$(graphql_count)" -ge 2 ] || fail "the read must be retried: $GHLOG"
+}
+
+# [fix-self-review-loop REQ-6] the attribution read is read-only and only the
+# notice keys ever go to the orchestrator.
+t_self_req6_attribution_read_only_reads() {
+  jq_ok || return 0
+  new_watch_case self-readonly
+  write_pr "$GH_STATE" 66 OPEN "$BRANCH" \
+    "$(reviews_json "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z '' PRR_ro)")"
+  printf '{"PRR_ro":0}\n' > "$GH_GRAPHQL_STATE"
+  W_TICKS=2
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF 'id=PRR_ro' <<<"$GHLOG" || fail "expected the attribution read: $GHLOG"
+  if grep -Evq '^(pr list( |$)|api graphql( |$))' <<<"$GHLOG"; then
+    fail "every gh call must be read-only: $GHLOG"
+  fi
+  if grep -Eq '(^| )(merge|close|comment|review|edit|create|push|reopen|ready)( |$)' <<<"$GHLOG"; then
+    fail "the watcher must never mutate GitHub: $GHLOG"
+  fi
+  [ "$(literal_send_count)" -eq 0 ] || fail "a reply-only review sends nothing: $TLOG"
+  [ -z "$CHILD_PANE_TEXT" ] || fail "the child pane must stay untouched: $CHILD_PANE_TEXT"
+}
+
+# [fix-self-review-loop REQ-8] a poisoned attribution read never starves the
+# rest of the scan: a later review that needs no attribution read is still
+# notified while the unreadable one waits out its retry delay.
+t_self_req8_unreadable_review_does_not_starve_other_reviews() {
+  jq_ok || return 0
+  new_watch_case self-starvation
+  write_pr "$GH_STATE" 67 OPEN "$BRANCH" \
+    "$(reviews_json \
+        "$(review_json jseto COMMENTED 2026-10-18T16:21:12Z '' PRR_bad)" \
+        "$(review_json alice APPROVED 2026-10-18T10:00:00Z)")"
+  printf '{"PRR_bad":1}\n' > "$GH_GRAPHQL_STATE"
+  : > "$GH_GRAPHQL_FAIL"
+  W_TICKS=4
+  run_watcher
+  [ "$RC" -eq 0 ] || fail "watcher exit=$RC stderr=$ERR"
+  grep -qF 'could not read the review comments' <<<"$ERR" \
+    || fail "the unreadable review must warn: $ERR"
+  [ "$(delivered_count)" -eq 1 ] \
+    || fail "the later actionable review must still be notified: $OUT"
+  grep -qF 'got a APPROVED review from alice' <<<"$MAIN_PANE_TEXT" \
+    || fail "the APPROVED notice is the one expected: $MAIN_PANE_TEXT"
+  grep -qF 'COMMENTED review from jseto' <<<"$MAIN_PANE_TEXT" \
+    && fail "the unreadable review must never be notified: $MAIN_PANE_TEXT"
+  [ "$(graphql_count)" -ge 2 ] || fail "the unreadable review must be retried: $GHLOG"
+}
+
+# [fix-self-review-loop REQ-7] the touched watcher and this suite stay clean.
+t_self_req7_shellcheck_clean() {
+  bash -n "$WATCH" || fail "bash -n reported syntax errors in $WATCH"
+  bash -n "${BASH_SOURCE[0]}" || fail "bash -n reported syntax errors in this suite"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    printf '  SKIP: shellcheck not on PATH\n' >&2
+    return 0
+  fi
+  shellcheck "$WATCH" "${BASH_SOURCE[0]}" || fail "shellcheck reported findings"
 }
 
 # ---------------------------------------------------------------------------
@@ -837,6 +1112,16 @@ run "[REQ-14] watcher stops when the lease disappears"                 t_req14_w
 run "supplementary: unknown lease warns and still notifies"           t_supp_unknown_lease_warns_and_still_notifies
 run "supplementary: fractional retry knob is rejected"                t_supp_fractional_retry_seconds_is_rejected
 run "supplementary: missing headRefName falls back to the branch"     t_supp_missing_headrefname_uses_the_requested_branch
+run "[fix-pending-notice REQ-5] queued review notice delivered once"  t_pending_req5_queued_review_notice_is_delivered_once
+run "[fix-pending-notice REQ-6] queued merged notice delivered once then stops" t_pending_req6_queued_merged_notice_is_delivered_once
+run "[fix-self-review-loop REQ-1] reply-only review is not notified"     t_self_req1_reply_only_review_is_not_notified
+run "[fix-self-review-loop REQ-2] top-level COMMENTED review notified"  t_self_req2_top_level_commented_review_is_notified
+run "[fix-self-review-loop REQ-3] review body needs no comment read"    t_self_req3_review_body_needs_no_comment_read
+run "[fix-self-review-loop REQ-4] APPROVED/CHANGES_REQUESTED unprobed"  t_self_req4_non_commented_reviews_need_no_comment_read
+run "[fix-self-review-loop REQ-5] unreadable read warns and retries"    t_self_req5_unreadable_read_warns_and_retries
+run "[fix-self-review-loop REQ-6] attribution read is read-only"        t_self_req6_attribution_read_only_reads
+run "[fix-self-review-loop REQ-7] touched watcher shellcheck-clean"     t_self_req7_shellcheck_clean
+run "[fix-self-review-loop REQ-8] unreadable review does not starve others" t_self_req8_unreadable_review_does_not_starve_other_reviews
 run "[REQ-15] every spawn arms the pr-watch window"                    t_req15_every_spawn_arms_the_pr_watch_window
 run "[REQ-16] unstartable pr-watch window does not fail spawn"         t_req16_unstartable_pr_watch_window_does_not_fail_spawn
 run "[REQ-17] touched scripts shellcheck-clean"                        t_req17_touched_scripts_shellcheck_clean
