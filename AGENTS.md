@@ -390,6 +390,21 @@ Hard rules:
   verbatim, never answering from itself) — and use **lavish** HTML artifacts
   when a question or report is better shown than told. The main session's
   job stays: spawn, route, quote, report, run the lifecycle mechanics.
+- **Children question the user at the atomic-specs gate; they never
+  self-approve** (user directive, 2026-10-20, "allow the children to question
+  the user at the atomic-specs gate"): the `atomic-specs` approval gate is a
+  real gate, not a formality to note and step over. A child that reaches it
+  pushes a `QUESTION:` notice through `sub-report.sh` (naming its
+  `tmp/pi-sub/reports/<task>.md`, plus a **lavish** HTML artifact when the
+  specs are better shown than told), stays on the gate, and waits — it must
+  not start implementing an unapproved `.feature`. The main session relays
+  the question to the user verbatim (prompt entry `child-in`) and the user's
+  answer back verbatim with `sub-send.sh` (`child-out`); it never approves on
+  the user's behalf and never treats "no answer yet" as approval. A child
+  that skipped the gate must say so in its report, and its `DONE` is not
+  accepted as complete until the user has seen the specs. Every spawned child
+  is told this in its kickoff, so the rule holds in repositories whose own
+  `AGENTS.md` knows nothing about the pattern.
 
 ### Lavish reviews (Telegram)
 
