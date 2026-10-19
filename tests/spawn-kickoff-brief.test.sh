@@ -214,6 +214,73 @@ t_req6_touched_scripts_shellcheck_and_bash_n_clean() {
   shellcheck -S warning "$SPAWN" "${BASH_SOURCE[0]}" || fail "shellcheck reported findings"
 }
 
+t_req27_question_channel_is_offered() {
+  local fx="$SCRATCH/req27" k
+  make_spawn_fixture "$fx"
+  run_spawn "$fx"
+  [ "$RC" -eq 0 ] || fail "expected spawn success, got $RC: $RERR"
+  k=$(spawn_kickoff "$fx")
+  grep -Fq 'sub-report.sh demo "QUESTION: <one-line question>"' <<<"$k" \
+    || fail "the kickoff must name the QUESTION notice template, got: $k"
+  grep -Eq 'QUESTION: <one-line question>.*pi-sub/reports/demo.md' <<<"$k" \
+    || fail "the kickoff must point at the report file for the question detail, got: $k"
+  grep -Fq 'pi-sub/reports/demo.md' <<<"$k" \
+    || fail "the kickoff must name the report file path, got: $k"
+  grep -Fq 'lavish HTML artifact' <<<"$k" \
+    || fail "the kickoff must allow a lavish artifact for the question, got: $k"
+  grep -Fq 'spec-approval gate' <<<"$k" \
+    || fail "the kickoff must name the spec-approval gate, got: $k"
+}
+
+t_req28_asked_question_blocks_the_gate() {
+  local fx="$SCRATCH/req28" k
+  make_spawn_fixture "$fx"
+  run_spawn "$fx"
+  [ "$RC" -eq 0 ] || fail "expected spawn success, got $RC: $RERR"
+  k=$(spawn_kickoff "$fx")
+  grep -Fq 'stop and end your turn until the answer arrives' <<<"$k" \
+    || fail "the kickoff must tell the child to wait after asking, got: $k"
+  grep -Eq 'QUESTION: <one-line question>.*stop and end your turn' <<<"$k" \
+    || fail "the wait must be tied to the asked question, got: $k"
+  grep -Fq 'do not implement an unapproved .feature' <<<"$k" \
+    || fail "the kickoff must forbid implementing an unapproved .feature, got: $k"
+  grep -Fq 'self-approve the gate because nobody answered' <<<"$k" \
+    || fail "the kickoff must forbid self-approving the gate, got: $k"
+}
+
+t_req29_relayed_answer_resumes() {
+  local fx="$SCRATCH/req29" k
+  make_spawn_fixture "$fx"
+  run_spawn "$fx"
+  [ "$RC" -eq 0 ] || fail "expected spawn success, got $RC: $RERR"
+  k=$(spawn_kickoff "$fx")
+  grep -Fq 'When the answer arrives' <<<"$k" \
+    || fail "the kickoff must say what happens when the answer arrives, got: $k"
+  grep -Fq 'sub-send.sh demo' <<<"$k" \
+    || fail "the kickoff must name the sub-send.sh relay, got: $k"
+  grep -Fq 'continue from there' <<<"$k" \
+    || fail "the kickoff must tell the child to continue after the answer, got: $k"
+}
+
+t_req30_existing_notice_guarantees_retained() {
+  local fx="$SCRATCH/req30" k
+  make_spawn_fixture "$fx"
+  run_spawn "$fx"
+  [ "$RC" -eq 0 ] || fail "expected spawn success, got $RC: $RERR"
+  k=$(spawn_kickoff "$fx")
+  grep -Fq 'Do not use notify, ntfy, or any other external notification mechanism' <<<"$k" \
+    || fail "the kickoff must keep the no-external-notification rule, got: $k"
+  grep -Fq 'DONE: <one-line summary>' <<<"$k" \
+    || fail "the kickoff must keep the DONE notice, got: $k"
+  grep -Fq 'BLOCKED: <reason>' <<<"$k" \
+    || fail "the kickoff must keep the BLOCKED notice, got: $k"
+  [ "$(grep -c '' "$fx/tmux/ran")" -eq 1 ] \
+    || fail "the kickoff must stay a single line, got: $k"
+  if grep -qF "\$'" "$fx/tmux/ran"; then
+    fail "the kickoff must not embed newlines or control characters, got: $k"
+  fi
+}
+
 run() {
   local name=$1 fn=$2 out
   if out=$( "$fn" 2>&1 ); then
@@ -232,6 +299,10 @@ run "[REQ-3] read-only brief is never contradicted"               t_req3_read_on
 run "[REQ-4] process comes from AGENTS.md, not the kickoff"       t_req4_process_comes_from_agents_md_not_the_kickoff
 run "[REQ-5] kickoff is pi's initial message argument"            t_req5_kickoff_is_pi_initial_message_argument
 run "[REQ-6] touched scripts shellcheck- and bash -n-clean"       t_req6_touched_scripts_shellcheck_and_bash_n_clean
+run "[REQ-27] kickoff offers the QUESTION channel"                t_req27_question_channel_is_offered
+run "[REQ-28] an asked question blocks the gate until answered"   t_req28_asked_question_blocks_the_gate
+run "[REQ-29] the relayed answer resumes the child"               t_req29_relayed_answer_resumes
+run "[REQ-30] existing notice guarantees are retained"           t_req30_existing_notice_guarantees_retained
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"
