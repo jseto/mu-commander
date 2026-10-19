@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Behavioural tests for scripts/_sub-common.sh — prepare_child_agent_dir
-# (specs/child-model-defaults/child-model-defaults.feature) and the region
+# (specs/child-model-defaults/child-model-defaults.feature and
+# specs/child-agent-definitions/child-agent-definitions.feature) and the region
 # parser + verified send of tmux_send_line (specs/fix-send-confirm/
 # fix-send-confirm.feature and specs/fix-parked-prompt/fix-parked-prompt.feature,
 # labels prefixed [fix-send-confirm] / [fix-parked-prompt]).
@@ -62,6 +63,23 @@ fx_nulls() {
 fx_missing() { :; }
 fx_malformed() { printf '{not valid json' > "$1/settings.json"; }
 fx_array() { printf '[1,2,3]\n' > "$1/settings.json"; }
+
+# Fixture: a user agent directory with a custom agent definition, an installed
+# extension and a non-empty package list (the isolation baseline).
+fx_agents_and_extensions() {
+  mkdir -p "$1/agents" "$1/extensions"
+  printf -- '---\nname: nff-audit\n---\naudit body\n' > "$1/agents/nff-audit.md"
+  printf 'export default function () {}\n' > "$1/extensions/some-ext.ts"
+  cat > "$1/settings.json" <<'JSON'
+{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-6","packages":["evil-ext"]}
+JSON
+}
+
+# Fixture: model defaults and no agents/ directory in the user agent directory.
+fx_no_agents() {
+  printf '%s\n' '{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-6"}' \
+    > "$1/settings.json"
+}
 
 # PATH without jq (bash/rm/mkdir/ln are the only externals the function runs).
 no_jq_path() {
@@ -149,6 +167,95 @@ t_req8_shellcheck_and_bash_n_clean() {
     return 0
   fi
   shellcheck "$COMMON" || fail "shellcheck reported findings"
+}
+
+# ---------------------------------------------------------------------------
+# child-agent-definitions: custom agent definitions in the prepared child dir
+# (specs/child-agent-definitions/child-agent-definitions.feature)
+# ---------------------------------------------------------------------------
+
+# [child-agent-definitions REQ-1] a definition placed in the user agent
+# directory is visible from the prepared child agent directory, linked rather
+# than copied, so a child can use the custom (nff-*) agent types.
+t_cad_req1_source_agent_definitions_are_visible() {
+  prepare fx_agents_and_extensions
+  [ "$RC" -eq 0 ] || fail "exit=$RC stderr=$ERR"
+  [ -L "$SB/agent-dir/agents" ] \
+    || fail "agents must be a symlink into the user agent dir"
+  [ "$(readlink "$SB/agent-dir/agents")" = "$SB/home/.pi/agent/agents" ] \
+    || fail "agents links $(readlink "$SB/agent-dir/agents"), expected the user agents dir"
+  [ -f "$SB/agent-dir/agents/nff-audit.md" ] \
+    || fail "the custom definition is not visible from the child agent dir"
+  cmp -s "$SB/home/.pi/agent/agents/nff-audit.md" "$SB/agent-dir/agents/nff-audit.md" \
+    || fail "the exposed definition is not the source file"
+}
+
+# [child-agent-definitions REQ-2] linking agents must not widen the isolation:
+# extensions/ stays a real, empty directory and packages stay empty.
+t_cad_req2_extensions_and_packages_isolation_holds() {
+  prepare fx_agents_and_extensions
+  [ "$RC" -eq 0 ] || fail "exit=$RC stderr=$ERR"
+  if [ ! -d "$SB/agent-dir/extensions" ] || [ -L "$SB/agent-dir/extensions" ]; then
+    fail "extensions must stay a real directory"
+  fi
+  [ -z "$(ls -A "$SB/agent-dir/extensions")" ] \
+    || fail "extensions must be empty, got: $(ls -A "$SB/agent-dir/extensions")"
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$SETTINGS" | jq -e '.packages == []' >/dev/null \
+      || fail "packages must stay empty, got: $SETTINGS"
+  else
+    printf '  SKIP: jq not on PATH (packages assertion)\n' >&2
+  fi
+}
+
+# [child-agent-definitions REQ-3] a missing user agents/ directory is not an
+# error and must not leave a dangling link behind.
+t_cad_req3_missing_source_agents_dir_is_not_an_error() {
+  prepare fx_no_agents
+  [ "$RC" -eq 0 ] || fail "exit=$RC stderr=$ERR"
+  [ -z "$ERR" ] || fail "expected silence on stderr, got: $ERR"
+  if [ -e "$SB/agent-dir/agents" ] || [ -L "$SB/agent-dir/agents" ]; then
+    fail "no agents entry must be created when the source is missing"
+  fi
+}
+
+# [child-agent-definitions REQ-4] only the user-level agents directory is
+# linked: project-level definitions stay in the child's worktree and are
+# discovered from there, untouched and unshadowed.
+t_cad_req4_only_user_level_agents_are_linked() {
+  local sb home wt before after
+  sb=$(mktemp -d "$SCRATCH/case.XXXXXX")
+  home=$sb/home
+  mkdir -p "$home/.pi/agent/agents"
+  printf 'user definition\n' > "$home/.pi/agent/agents/nff-specify.md"
+  wt=$sb/worktree
+  mkdir -p "$wt/.pi/agents"
+  printf 'project definition\n' > "$wt/.pi/agents/project-only.md"
+  before=$(cd "$wt" && sha256sum .pi/agents/*.md)
+  ( cd "$wt" && env HOME="$home" bash -c \
+      "source '$COMMON'; prepare_child_agent_dir '$sb/agent-dir'" ) \
+    >/dev/null 2>"$sb/stderr" \
+    || fail "prepare_child_agent_dir failed: $(cat "$sb/stderr")"
+  [ "$(readlink "$sb/agent-dir/agents")" = "$home/.pi/agent/agents" ] \
+    || fail "agents must link only the user agent dir, got: $(readlink "$sb/agent-dir/agents")"
+  if [ -e "$sb/agent-dir/agents/project-only.md" ]; then
+    fail "the worktree definition leaked into the user-level link"
+  fi
+  after=$(cd "$wt" && sha256sum .pi/agents/*.md)
+  [ "$before" = "$after" ] \
+    || fail "the worktree's .pi/agents definitions were modified"
+}
+
+# [child-agent-definitions REQ-5] the touched script and this suite stay
+# bash -n- and shellcheck-clean.
+t_cad_req5_shellcheck_and_bash_n_clean() {
+  bash -n "$COMMON" || fail "bash -n reported syntax errors in the script"
+  bash -n "${BASH_SOURCE[0]}" || fail "bash -n reported syntax errors in the suite"
+  if ! command -v shellcheck >/dev/null 2>&1; then
+    printf '  SKIP: shellcheck not on PATH\n' >&2
+    return 0
+  fi
+  shellcheck "$COMMON" "${BASH_SOURCE[0]}" || fail "shellcheck reported findings"
 }
 
 # ---------------------------------------------------------------------------
@@ -797,6 +904,12 @@ run "[REQ-5] packages-only file when settings malformed"        t_req5_packages_
 run "[REQ-6] packages-only file when settings wrong-shaped"     t_req6_packages_only_when_global_settings_wrong_shape
 run "[REQ-7] packages-only file when jq unavailable"            t_req7_packages_only_when_jq_unavailable
 run "[REQ-8] shellcheck and bash -n clean"                      t_req8_shellcheck_and_bash_n_clean
+
+run "[child-agent-definitions REQ-1] source agent definitions visible"    t_cad_req1_source_agent_definitions_are_visible
+run "[child-agent-definitions REQ-2] extensions/packages isolation holds" t_cad_req2_extensions_and_packages_isolation_holds
+run "[child-agent-definitions REQ-3] missing source agents dir is no error" t_cad_req3_missing_source_agents_dir_is_not_an_error
+run "[child-agent-definitions REQ-4] only user-level agents are linked"   t_cad_req4_only_user_level_agents_are_linked
+run "[child-agent-definitions REQ-5] shellcheck and bash -n clean"        t_cad_req5_shellcheck_and_bash_n_clean
 
 run "[fix-send-confirm REQ-7] region parser splits recognized layouts" t_send_req7_regions_split_recognized_layouts
 run "[fix-send-confirm REQ-1] confirm from transcript evidence"        t_send_req1_confirms_from_transcript_evidence

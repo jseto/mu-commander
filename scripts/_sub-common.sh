@@ -266,10 +266,13 @@ pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
 }
 
 # Prepare an isolated Pi agent directory for a child. It preserves non-extension
-# resources such as settings metadata, skills, prompts, and themes, but gives
-# the child no extensions or packages at all — @tintinweb/pi-subagents, the one
-# extension children load, is passed on the launch line instead
-# (pi_launch_command).
+# resources such as settings metadata, custom agent definitions, skills,
+# prompts, and themes, but gives the child no extensions or packages at all —
+# @tintinweb/pi-subagents, the one extension children load, is passed on the
+# launch line instead (pi_launch_command). Linking `agents` exposes the user's
+# custom agent types (the nff-* definitions the flow names) to the child;
+# project-level .pi/agents definitions keep being discovered from the child's
+# worktree, where they override the user-level ones.
 # The directory lives in the
 # gitignored scratch dir of the main checkout (outside the worktree) and is
 # removed on retirement.
@@ -297,7 +300,7 @@ prepare_child_agent_dir() { # $1=destination dir; echoes dir
       ln -s "$source" "$agent_dir/$name"
     fi
   done
-  for name in npm node_modules skills prompts themes; do
+  for name in agents npm node_modules skills prompts themes; do
     source="$HOME/.pi/agent/$name"
     if [ -e "$source" ] || [ -L "$source" ]; then
       ln -s "$source" "$agent_dir/$name"
