@@ -11,13 +11,13 @@
       },
       "standard": {
         "description": "Features and bug fixes with the full specs flow.",
-        "model": "opencode-zen-free/space-bunny-free",
-        "thinking": "max"
+        "model": "opencode-zen-free/deepseek-v4.1-flash-free",
+        "thinking": "high"
       },
       "hard": {
         "description": "Architecture, root-cause analysis, long-haul work.",
-        "model": "opencode-go/gpt-6-luna",
-        "thinking": "max"
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "thinking": "high"
       }
     }
   }
