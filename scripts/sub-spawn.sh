@@ -152,8 +152,11 @@ fi
 #    and points at the repository's AGENTS.md for the process, so it can never
 #    contradict a read-only brief (specs/spawn-kickoff-brief): the change
 #    deliverable (commit, push, PR) applies only when the brief is a change
-#    task, and a read-only brief overrides it.
-KICKOFF="Read the task brief at $TF. It is the source of truth for what this task must deliver. Follow the process this repository's AGENTS.md defines. If the brief is a change task, commit your work on the current branch ($BRANCH), push your branch to origin, and open a pull request against $BASE_BRANCH using gh pr create. If the brief is read-only, change nothing, push nothing, and open no PR. Write your report to $RF (findings or changes, test results, links where the brief calls for them, notes). Do not use notify, ntfy, or any other external notification mechanism. When done or blocked, use only $SCRIPT_DIR/sub-report.sh $TASK \"DONE: <one-line summary>\" (or BLOCKED: <reason>)"
+#    task, and a read-only brief overrides it. It also names the QUESTION
+#    notice channel so a child can ask the user to decide something (the
+#    spec-approval gate above all) instead of self-approving it or silently
+#    stalling, and tells it to wait for the relayed answer before acting.
+KICKOFF="Read the task brief at $TF. It is the source of truth for what this task must deliver. Follow the process this repository's AGENTS.md defines. If the brief is a change task, commit your work on the current branch ($BRANCH), push your branch to origin, and open a pull request against $BASE_BRANCH using gh pr create. If the brief is read-only, change nothing, push nothing, and open no PR. When you need the user to decide something, in particular the spec-approval gate, ask by pushing $SCRIPT_DIR/sub-report.sh $TASK \"QUESTION: <one-line question>\", put the detail in $RF and, when a picture beats prose, use a lavish HTML artifact; then stop and end your turn until the answer arrives, and do not implement an unapproved .feature or self-approve the gate because nobody answered. When the answer arrives (the main session relays it with $SCRIPT_DIR/sub-send.sh $TASK), continue from there. Write your report to $RF (findings or changes, test results, links where the brief calls for them, notes). Do not use notify, ntfy, or any other external notification mechanism. When done or blocked, use $SCRIPT_DIR/sub-report.sh $TASK \"DONE: <one-line summary>\" (or BLOCKED: <reason>)"
 
 # 5. Boot pi in a named tmux session, rooted in the worktree. The isolated
 #    agent directory deliberately provides no extensions or packages of its

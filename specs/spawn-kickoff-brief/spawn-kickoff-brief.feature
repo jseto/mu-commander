@@ -19,6 +19,16 @@ Feature: The spawn kickoff defers to the task brief (scripts/sub-spawn.sh)
   (change nothing, push nothing, open no PR) that a read-only brief selects.
   The kickoff stays pi's initial message argument, exactly as before.
 
+  It also names the **QUESTION** notice channel: a child that needs the user
+  to decide something — in particular the `atomic-specs` approval gate — asks
+  through `sub-report.sh`, puts the detail in its report file (with a lavish
+  HTML artifact when a picture beats prose), then waits. An asked question is
+  blocking: the child must not implement an unapproved `.feature` and must
+  not self-approve the gate because nobody answered. When the main session
+  relays the answer with `sub-send.sh`, the child continues from there. The
+  existing guarantees — single-line kickoff, `DONE`/`BLOCKED` notices, no
+  external notification mechanism — are unchanged.
+
   Scenario: The kickoff names the brief as the authority on deliverables [REQ-1]
     Given a task brief that exists at the child's brief path
     When sub-spawn.sh spawns the child
@@ -57,3 +67,30 @@ Feature: The spawn kickoff defers to the task brief (scripts/sub-spawn.sh)
     Given shellcheck is available
     When scripts/sub-spawn.sh and this change's test suite are checked
     Then bash -n and shellcheck report no findings
+
+  Scenario: A child can ask the user through the QUESTION channel [REQ-27]
+    Given a spawned child whose work reaches the spec-approval gate
+    When the child needs the user to decide something
+    Then the kickoff tells the child to push
+      "sub-report.sh <task> \"QUESTION: <one-line question>\""
+    And the kickoff puts the question's detail in the child's report file
+    And the kickoff permits a lavish HTML artifact when a picture beats prose
+
+  Scenario: An asked question blocks the gate until answered [REQ-28]
+    Given a child whose question is unanswered
+    When the child has pushed its question
+    Then the kickoff tells the child to wait
+    And the kickoff forbids implementing an unapproved .feature
+    And the kickoff forbids self-approving the gate because nobody answered
+
+  Scenario: The relayed answer resumes the child [REQ-29]
+    Given the main session relays the user's answer with sub-send.sh
+    When the answer reaches the child
+    Then the kickoff tells the child to continue from there
+
+  Scenario: The existing notice guarantees are retained [REQ-30]
+    When sub-spawn.sh spawns a child
+    Then the kickoff still forbids notify, ntfy, or any other external
+      notification mechanism
+    And the kickoff still names the DONE and BLOCKED notices
+    And the kickoff remains a single-line argument
