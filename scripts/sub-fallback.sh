@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Recover a child stuck on a free-provider failure: the usage limit
+# Recover a CHILD stuck on a free-provider failure: the usage limit
 # (FreeUsageLimitError / HTTP 429) or the free-tier rejection that blocks
 # pi's compaction calls (FreeTierError / HTTP 403). Switches the running
 # child's pi TUI to the fallback model from config.json
 # (taskLevels.fallbackModel) through the shared verified send, and confirms
 # the switch in the child's status bar.
+#
+# The switch/confirm/thinking mechanics live in _sub-common.sh
+# (free_provider_recover) because the orchestrator watcher applies the same
+# rules to the main session; this helper keeps the child's policy: only a
+# child session, only on a visible failure, and the messages/exit codes below.
 #
 # Never speculative: the child's pane must already show the provider
 # failure, and the child must not already be on the fallback model — the
@@ -49,103 +54,18 @@ if ! pane_has_free_limit_error "$TASK" "$FALLBACK_SCAN_LINES"; then
   exit 0
 fi
 
+# The mechanics (already-on no-op, verified /model, status-bar confirmation,
+# then /thinking) are shared with the orchestrator watcher; this file owns what
+# an outcome means for the child: an unconfirmed switch is a loud failure, a
+# rejected or unconfirmed /thinking a warning, and the model switch alone is
+# always the recovery.
 MODEL=$(resolve_fallback_model)
-if [ -z "$MODEL" ]; then
-  die "free-provider failure detected in $SESS, but no fallbackModel is configured in $(levels_config) — no model switch performed"
-fi
-
-# Re-running after a successful (or externally performed) switch is a no-op.
-if pane_shows_model "$TASK" "$MODEL"; then
-  info "$SESS is already on fallback model $MODEL — no model switch performed"
-  exit 0
-fi
-
 THINKING=$(resolve_fallback_thinking)
-
-# Wait for a switch to show up in the status bar, nudging the verified line
-# with bare Enters while it has not. tmux_send_line confirms the pane reacted
-# to Enter, but pi's argument completion can consume an Enter as "close the
-# popup" without submitting the command (observed in a real TUI: the pane
-# changes, the line stays in the composer). The status bar is the ground
-# truth, so poll it; the nudged line was just verified present, so an extra
-# Enter cannot submit anything else.
-confirm_model() {
-  local attempt i
-  for (( attempt = 0; attempt <= FALLBACK_SEND_ATTEMPTS; attempt++ )); do
-    if [ "$attempt" -gt 0 ]; then
-      tmux send-keys -t "$SESS" Enter
-      sleep "$FALLBACK_PROBE_DELAY"
-    fi
-    for (( i = 0; i < FALLBACK_PROBE_ATTEMPTS; i++ )); do
-      pane_shows_model "$TASK" "$MODEL" && return 0
-      sleep "$FALLBACK_PROBE_DELAY"
-    done
-  done
-  return 1
-}
-
-# Returns 0 once the level shows in the status bar, 2 when pi rejected it
-# (Error: Unknown thinking level — a fallbackThinking that does not match the
-# model now in effect, i.e. a config.json problem, not a delivery problem:
-# stop instead of nudging a command the TUI will never accept), 1 when it
-# could not be confirmed at all.
-confirm_thinking() {
-  local attempt i
-  for (( attempt = 0; attempt <= FALLBACK_SEND_ATTEMPTS; attempt++ )); do
-    if [ "$attempt" -gt 0 ]; then
-      tmux send-keys -t "$SESS" Enter
-      sleep "$FALLBACK_PROBE_DELAY"
-    fi
-    for (( i = 0; i < FALLBACK_PROBE_ATTEMPTS; i++ )); do
-      pane_shows_thinking "$TASK" "$THINKING" && return 0
-      pane_thinking_level_rejected "$TASK" "$FALLBACK_SCAN_LINES" && return 2
-      sleep "$FALLBACK_PROBE_DELAY"
-    done
-  done
-  return 1
-}
-
-# Discard whatever is left in the child's composer after a send that could
-# not be confirmed, so a parked slash command can never be submitted later by
-# an unrelated Enter (pi's editor deleteToLineStart binding is ctrl+u).
-clear_composer() { tmux send-keys -t "$SESS" C-u 2>/dev/null || true; }
-
-# An unconfirmed model switch is a loud failure — reporting success for a
-# child still on the limited model would be a lie.
-if tmux_send_line "$SESS" "/model $MODEL" && confirm_model; then
-  info "switched $SESS to fallback model $MODEL"
-else
-  clear_composer
-  die "sent /model $MODEL to $SESS, but its status bar still does not show it — check the pane"
-fi
-
-# Thinking comes after the model switch: pi clamps the session's current level
-# to the new model's range on /model, so if the clamp already lands on the
-# configured level there is nothing to send. Otherwise apply it, still
-# confirming against the status bar. This is a refinement, not the recovery —
-# a thinking problem never fails a recovered child: a level pi rejects
-# (confirm_thinking returns 2) is reported as the config problem it is, and
-# any other unconfirmed send warns after clearing the composer.
-if [ -n "$THINKING" ]; then
-  if pane_shows_thinking "$TASK" "$THINKING"; then
-    info "thinking level already $THINKING — nothing to change"
-  else
-    t_rc=0
-    if tmux_send_line "$SESS" "/thinking $THINKING"; then
-      confirm_thinking || t_rc=$?
-    else
-      t_rc=1
-    fi
-    case $t_rc in
-      0) info "thinking level set to $THINKING" ;;
-      2)
-        clear_composer
-        warn "$SESS rejected thinking level '$THINKING' (pi: $_FALLBACK_THINKING_ERROR_RE) — fallbackThinking in $(levels_config) does not match fallbackModel $MODEL; the model switch alone recovered the child"
-        ;;
-      *)
-        clear_composer
-        warn "could not confirm /thinking $THINKING in $SESS — check the pane"
-        ;;
-    esac
-  fi
-fi
+rc=0
+free_provider_recover "$SESS" "$MODEL" "$THINKING" "$FALLBACK_SCAN_LINES" || rc=$?
+case $rc in
+  0|5) exit 0 ;;   # 5 already reported "already on fallback model …"
+  2|4) warn "$(free_provider_failure_message "$rc" "$SESS" "$MODEL" child "$THINKING")" ;;
+  3)   die  "$(free_provider_failure_message 3 "$SESS" "$MODEL")" ;;
+  *)   die  "$(free_provider_failure_message 1 "$SESS" "$MODEL")" ;;
+esac

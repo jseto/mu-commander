@@ -3,6 +3,11 @@
 # (specs/unified-child-watcher/unified-child-watcher.feature); one test per
 # Scenario, labels [REQ-n].
 #
+# This suite is also the regression seam for specs/orchestrator-stall-recovery
+# [REQ-25]: the child stall service stays notify-only with the loose pane
+# signature, and none of these scenarios may change while the orchestrator
+# watcher gets its own strict detector.
+#
 # Hermetic: fake `tmux`, `gh`, `treehouse`, `git`, and `lavish-axi` binaries
 # live in a scratch dir first on PATH; per-case fixture JSON drives the PR
 # read, the lease state, and the Lavish state file; the child pane is a file.

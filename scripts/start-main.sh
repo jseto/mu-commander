@@ -86,9 +86,38 @@ sleep 0.5
 printf -v LAUNCH '%q' "$PI_BIN"
 tmux_send_shell_line "$SESS" "$LAUNCH"
 
-if [ "$DETACH" = 1 ]; then
-  info "started detached tmux session $SESS (rooted at $ROOT, pi: $PI_BIN); attach with: tmux attach -t $SESS"
+# Arm the orchestrator watcher (specs/orchestrator-stall-recovery): exactly ONE
+# extra window running main-watch.sh for this session, so a free-provider
+# failure in the orchestrator itself is recovered instead of wedging the whole
+# pattern. Armed on the creation path only — an existing session returned
+# through finish() above, so it gains no window and is never restarted. -d is
+# load-bearing: it keeps the pi window current, so the pi window stays the one
+# the layout above (and every pane lookup) addresses. Best effort, like the child
+# watcher: a window that cannot be created warns and never fails start-main.
+#
+# The watcher gets pi's window index: resolved HERE, before the watch window
+# exists, because the freshly created session has exactly one window — the pi
+# one — so `=SESS:` is unambiguous right now. A literal index would be worse
+# than useless: on a base-index-1 server index 0 does not exist, and tmux
+# resolves a missing index to the session's SELECTED window, which becomes the
+# watcher's own window the moment it is armed.
+WATCH_STATE="unavailable"
+PI_WINDOW_INDEX=$(tmux display-message -p -t "=$SESS:" '#{window_index}' 2>/dev/null || true)
+if [ "${START_MAIN_NO_WATCH:-0}" = 1 ]; then
+  WATCH_STATE="disabled (START_MAIN_NO_WATCH=1)"
 else
-  info "started tmux session $SESS (rooted at $ROOT, pi: $PI_BIN); attaching (detach with Ctrl-b d)"
+  WATCH_CMD="exec $(printf '%q' "$SCRIPT_DIR/main-watch.sh") $(printf '%q' "$SESS")"
+  if [ -n "$PI_WINDOW_INDEX" ]; then WATCH_CMD+=" $(printf '%q' "$PI_WINDOW_INDEX")"; fi
+  if tmux new-window -d -t "=$SESS:" -n watch -c "$ROOT" "$WATCH_CMD" >/dev/null 2>&1; then
+    WATCH_STATE="watch window in $SESS (orchestrator stall recovery)"
+  else
+    warn "could not arm the orchestrator watcher window in $SESS — only automatic stall watching is missing"
+  fi
+fi
+
+if [ "$DETACH" = 1 ]; then
+  info "started detached tmux session $SESS (rooted at $ROOT, pi: $PI_BIN); watcher: $WATCH_STATE; attach with: tmux attach -t $SESS"
+else
+  info "started tmux session $SESS (rooted at $ROOT, pi: $PI_BIN); watcher: $WATCH_STATE; attaching (detach with Ctrl-b d)"
 fi
 finish

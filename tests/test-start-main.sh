@@ -12,7 +12,10 @@ set -uo pipefail
 
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 START_DIR=$(cd "$TESTS_DIR/../scripts" && pwd)
-START="$START_DIR/start-main.sh"
+# SUT override (the SUB_COMMON_UNDER_TEST idiom the sibling suites use): a
+# mutated copy of the whole scripts/ dir can be checked to make these tests
+# go red, without touching scripts/ in this checkout.
+START=${START_MAIN_UNDER_TEST:-$START_DIR/start-main.sh}
 
 # The main checkout is the first entry of `git worktree list` — an
 # independent source for what "main checkout" means, unlike the
@@ -84,6 +87,9 @@ tux() { env -u TMUX -u TMUX_PANE TMUX_TMPDIR="$TMP" tmux "$@"; }
 OUT="$TMP/out"; ERR="$TMP/err"; RC=0
 PI_VAL=""   # supplied as PI_BIN to the script; empty = unset (default pi)
 RUN_CWD=""  # invocation directory for run_start; empty = current dir
+RUN_ENV=()   # extra NAME=VALUE exports for the next run_start (added only)
+TMUX_SHIM=""  # dir holding a `tmux` shim placed first on the next run's PATH
+REAL_TMUX=$(command -v tmux)
 
 run_start() { # <script args...>; sets RC, $OUT, $ERR
   (
@@ -91,6 +97,9 @@ run_start() { # <script args...>; sets RC, $OUT, $ERR
     unset TMUX TMUX_PANE MAIN_PANE MAIN_SESSION
     export TMUX_TMPDIR="$TMP"
     if [ -n "$PI_VAL" ]; then export PI_BIN="$PI_VAL"; else unset PI_BIN; fi
+    if [ -n "$TMUX_SHIM" ]; then export PATH="$TMUX_SHIM:$PATH"; fi
+    local kv
+    for kv in ${RUN_ENV[@]+"${RUN_ENV[@]}"}; do export "${kv?}"; done
     "$START" "$@"
   ) >"$OUT" 2>"$ERR"
   RC=$?
@@ -114,6 +123,30 @@ wait_for_child() { # $1 = needle expected among the pane's children
     sleep 0.25
   done
   return 1
+}
+
+# --- orchestrator watcher arming (specs/orchestrator-stall-recovery) --------
+
+# Window lookups always address the session's CURRENT window for pane formats
+# (`=pi-main:`); the window list itself needs no index assumption, because a
+# user's tmux.conf may set base-index.
+window_names()  { tux list-windows -t "=pi-main:" -F '#W' 2>/dev/null; }
+window_count()  { local n; n=$(window_names | grep -c '' 2>/dev/null || true); printf '%s' "${n:-0}"; }
+watch_windows() { local n; n=$(window_names | grep -cx -- watch 2>/dev/null || true); printf '%s' "${n:-0}"; }
+watch_start_command() { tux list-panes -t "=pi-main:watch" -F '#{pane_start_command}' 2>/dev/null; }
+
+# A tmux shim that refuses ONLY the watcher window and delegates everything
+# else to the real binary, so the session is created normally.
+mk_tmux_shim() { # $1 = dir to populate
+  mkdir -p "$1"
+  cat > "$1/tmux" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" new-window "*"-n watch "*) printf 'shim: refusing to create windows\\n' >&2; exit 1 ;;
+esac
+exec "$REAL_TMUX" "\$@"
+EOF
+  chmod +x "$1/tmux"
 }
 
 # --- scenarios --------------------------------------------------------------
@@ -295,6 +328,89 @@ req_9() {
   PI_VAL=""
 }
 
+# --- orchestrator watcher arming (specs/orchestrator-stall-recovery) --------
+
+orch_req_1() {
+  begin "[REQ-1] Starting a new main session arms one orchestrator watcher window"
+  fresh_session
+  PI_VAL="$TESTBIN/fake-pi"
+  run_start --detach
+  t_eq "exits 0" 0 "$RC"
+  t_eq "exactly one extra window (the pi window plus the watcher)" 2 "$(window_count)"
+  t_eq "exactly one window is named watch" 1 "$(watch_windows)"
+  # -d keeps the pi window current: it stays window 0 for the layout and for
+  # every `=pi-main:` pane lookup, and it still runs the launched pi.
+  t_eq "the pi window is still the current one" 1 \
+    "$(tux display-message -p -t "=pi-main:" '#{window_active}' 2>/dev/null)"
+  if wait_for_child "$TESTBIN/fake-pi"
+  then ok "the first window still runs the launched pi"
+  else bad "the first window no longer runs the launched pi (args: $(pane_child_args))"
+  fi
+  printf '%s' "$(watch_start_command)" > "$TMP/watch-start.txt"
+  t_has "the watch window runs the orchestrator watcher" "main-watch.sh" "$TMP/watch-start.txt"
+  t_has "the watcher was armed for the watched session" "main-watch.sh pi-main" "$TMP/watch-start.txt"
+  t_has "the output reports the watcher state" \
+    "watcher: watch window in pi-main (orchestrator stall recovery)" "$OUT"
+}
+
+orch_req_2() {
+  begin "[REQ-2] An existing main session gains no watcher and is not restarted"
+  fresh_session
+  # A session that predates this feature: no watcher window.
+  tux new-session -d -s pi-main -c "$TMP" "sleep 60"
+  if has_main; then ok "setup: an unwatched session exists"; else bad "setup: could not create the session"; fi
+  local pid_before wins_before cwd_before
+  pid_before=$(pane_pid)
+  wins_before=$(window_names)
+  cwd_before=$(pane_cwd)
+  t_eq "setup: one window only" 1 "$(window_count)"
+  PI_VAL="$TESTBIN/fake-pi"
+  run_start --detach
+  t_eq "exits 0" 0 "$RC"
+  t_eq "the window list is unchanged" "$wins_before" "$(window_names)"
+  t_eq "no watcher window is added" 0 "$(watch_windows)"
+  t_eq "the pane process was not restarted" "$pid_before" "$(pane_pid)"
+  t_has "reports the session name" "pi-main" "$OUT"
+  t_has "reports its working directory" "$cwd_before" "$OUT"
+}
+
+orch_req_21() {
+  begin "[REQ-21] Disarming the watcher leaves start-main succeeding"
+  fresh_session
+  PI_VAL="$TESTBIN/fake-pi"
+  RUN_ENV=(START_MAIN_NO_WATCH=1)
+  run_start --detach
+  RUN_ENV=()
+  t_eq "exits 0" 0 "$RC"
+  if wait_for_child "$TESTBIN/fake-pi"
+  then ok "the session runs pi"
+  else bad "the session does not run pi (args: $(pane_child_args))"
+  fi
+  t_eq "the session gains no watch window" 0 "$(watch_windows)"
+  t_eq "only the pi window exists" 1 "$(window_count)"
+  t_has "the output reports the watcher disabled" \
+    "watcher: disabled (START_MAIN_NO_WATCH=1)" "$OUT"
+}
+
+orch_req_22() {
+  begin "[REQ-22] A watcher window that cannot be armed does not fail start-main"
+  fresh_session
+  mk_tmux_shim "$TMP/tmux-shim"
+  PI_VAL="$TESTBIN/fake-pi"
+  TMUX_SHIM="$TMP/tmux-shim"
+  run_start --detach
+  TMUX_SHIM=""
+  t_eq "exits 0 despite the refused window" 0 "$RC"
+  if wait_for_child "$TESTBIN/fake-pi"
+  then ok "the session runs pi"
+  else bad "the session does not run pi (args: $(pane_child_args))"
+  fi
+  t_eq "no watch window was created" 0 "$(watch_windows)"
+  t_has "warns that the watcher could not be armed" "could not arm the orchestrator watcher" "$ERR"
+  t_has "names what is missing" "only automatic stall watching is missing" "$ERR"
+  t_has "the output reports the watcher unavailable" "watcher: unavailable" "$OUT"
+}
+
 # --- run --------------------------------------------------------------------
 
 main() {
@@ -309,11 +425,23 @@ main() {
   req_7
   req_8
   req_9
+  orch_req_1
+  orch_req_2
+  orch_req_21
+  orch_req_22
 
-  begin "shellcheck gate"
+  begin "[REQ-27] Touched scripts stay shellcheck-clean"
+  # orchestrator-stall-recovery [REQ-27] names the watcher, start-main.sh and
+  # the two scripts whose seams the feature changed, so this gate covers them.
+  local -a touched=("$START" "$START_DIR/main-watch.sh" "$START_DIR/_sub-common.sh" \
+                    "$START_DIR/sub-fallback.sh" "$TESTS_DIR/test-start-main.sh")
+  if bash -n "${touched[@]}"
+  then ok "start-main.sh, main-watch.sh, _sub-common.sh, sub-fallback.sh and the test suite pass bash -n"
+  else bad "bash -n reported syntax errors"
+  fi
   if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck -x -P SCRIPTDIR "$START" "$TESTS_DIR/test-start-main.sh"
-    then ok "start-main.sh and the test suite are shellcheck-clean"
+    if shellcheck -x -P SCRIPTDIR "${touched[@]}"
+    then ok "start-main.sh, main-watch.sh, _sub-common.sh, sub-fallback.sh and the test suite are shellcheck-clean"
     else bad "shellcheck reported issues"
     fi
   else

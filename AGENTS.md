@@ -268,7 +268,8 @@ SCRIPTS=/home/jseto/programming-projects/mu-commander/scripts
 | `sub-retire.sh <task> [repo] [--force] [--keep-files] [--no-branch-cleanup]` | Kill `pi-<task>`, return a leased worktree, delete the task's scratch brief/report/patch, best-effort clean up merged local/remote branches (`--no-branch-cleanup` skips that), and log retirement with the child's session cost; refuses when work may be lost (overridable with `--force`; if the lease is missing, `--force` stops the child but skips worktree return and branch cleanup; `--keep-files` retains scratch docs) |
 | `sub-clean.sh [repo] [--yes]` | Sweep scratch docs for tasks with no lease and no running tmux session (dry-run unless `--yes`) |
 | `conversation-log.sh append <kind> <message>` | Append one entry to the weekly conversation/operation log in gitignored `logs/conversations/` (6-month retention sweep runs on every call; **logs are only read to resolve operational issues** — never during normal operation); kinds: `prompt`, `reply`, `child-out`, `child-in`, `operation` — see *Conversation logging* |
-| `start-main.sh [--detach\|-d]` | Start the orchestrator's main pi session in tmux `pi-main` (name follows `$MAIN_SESSION`): create it detached at the main checkout of this repo, launch plain `$PI_BIN` (default `pi`, no child flags, submission verified via `tmux_send_line`), set the `main-pane-width 50%` / `main-vertical` convention, then attach — `--detach`/`-d` only starts or points at it; an existing session is reported (name + cwd) and re-attached, never restarted |
+| `start-main.sh [--detach\|-d]` | Start the orchestrator's main pi session in tmux `pi-main` (name follows `$MAIN_SESSION`): create it detached at the main checkout of this repo, launch plain `$PI_BIN` (default `pi`, no child flags, submission verified via `tmux_send_line`), set the `main-pane-width 50%` / `main-vertical` convention, arm one `watch` window (`START_MAIN_NO_WATCH=1` opts out) running the orchestrator watcher, then attach — `--detach`/`-d` only starts or points at it; an existing session is reported (name + cwd) and re-attached, never restarted |
+| `main-watch.sh [session]` | The orchestrator's own stall recovery (name follows `$MAIN_SESSION`), armed by `start-main.sh` in that one detached `watch` window: scans the session's pane for pi's *rendered* free-provider error only, applies the same recovery rules as `sub-fallback.sh`, types exactly one wake line per incident so the interrupted turn resumes, retries an unconfirmed switch, warns (never exits) on config problems, and stops when the session goes away — see *Orchestrator watcher* |
 | `worktree-setup.sh` | treehouse `post_create` hook: installs dependencies in each new worktree (lockfile-aware; see *Init scripts* below) |
 
 Details:
@@ -494,6 +495,64 @@ The watcher is best-effort: a window that cannot start only warns, and
 the PR service. While developing, `SUB_WATCH_SERVICES` selects the services
 for a run (comma-separated `lavish,pr,stall`, default all three; unknown
 names warn and are ignored, an empty selection exits without watching).
+
+### Orchestrator watcher (the main session's own stall recovery)
+
+A free-provider failure in the orchestrator wedges the whole pattern: the
+main session stops answering, the children keep working, and no child notice
+is ever acted on again. Nothing watched it — the child watcher is notify-only
+and `sub-fallback.sh` recovers a *child*. So `start-main.sh` arms ONE watcher
+in a detached `watch` window of the session it just created (`MAIN_SESSION`,
+canonically `pi-main`), running `scripts/main-watch.sh <session>`;
+`START_MAIN_NO_WATCH=1` opts out. It is armed **only** on the creation path:
+an existing session gains no window and is never restarted (the start-main
+contract), a window that cannot be armed only warns, and the watcher dies
+with the session it watches (reporting that the watched session is not
+running).
+
+- **Strict detection.** pi's own error render only: a pane line whose trimmed
+  text starts with `Error: `, matched on that line or on its wrapped
+  continuation lines against the same free-provider signature the child
+  probes use. A signature quoted in analysis prose or tool output, and a
+  delivered child `STUCK: …` notice (it arrives as `[<task>] STUCK: …`), can
+  never trigger it — the watcher never mistakes its own notification traffic
+  for an incident. The child stall service keeps its looser detector and
+  stays notify-only.
+- **Shared recovery.** The switch/confirmation/thinking mechanics live once in
+  `scripts/_sub-common.sh` and are used by both `main-watch.sh` and
+  `sub-fallback.sh` (which still recovers **children only**): the model and
+  level come from the `taskLevels.fallbackModel` / `taskLevels.fallbackThinking`
+  entries of `config.json` (env overrides `SUB_FALLBACK_MODEL` /
+  `SUB_FALLBACK_THINKING`), the switch is the verified tmux send, the status
+  bar is the only confirmation, an id that merely extends the fallback id does
+  not count as "already on", and an unconfirmed switch is retried and never
+  reported as done.
+- **Exactly one wake per incident.** The switch alone does not retry the turn
+  the provider error killed, so a confirmed switch (or a session already on
+  the fallback) types one wake line into the session — with a unique
+  `[main-watch <epoch>]` tail — telling the orchestrator to resume the
+  interrupted turn; nothing else is typed. An unchanged incident is left alone
+  until `MAIN_WATCH_REWAKE_SECONDS` has elapsed, then gets one further wake and
+  never a second model switch; a cleared failure — or a *different* failure
+  render that replaces the visible one with no error-free scan between — lets a
+  later one be recovered as a new incident, never merely woken. A pane that is
+  not running pi is never typed into (pi is recognized through its launcher or
+  the interpreter that runs it; a shell or other interactive non-TUI program is
+  not), and
+  the watcher sends no notice to itself through `sub-report.sh`.
+- **Config problems only warn.** A missing, unreadable, or malformed config (or
+  one naming no `taskLevels.fallbackModel`) warns — naming the file and the
+  missing entry — sends nothing and keeps watching; a `fallbackThinking` the
+  fallback model rejects degrades to the same config-problem warning, with the
+  model switch still counted as the recovery and the level never reported as
+  set.
+- **Knobs** (timing and arming only — this file names no model and no level,
+  `config.json` stays the single source of truth): `MAIN_WATCH_INTERVAL` (scan
+  interval, default 30 s), `MAIN_WATCH_RETRY_SECONDS` (retry after an
+  unfinished attempt, default 30 s), `MAIN_WATCH_REWAKE_SECONDS` (re-wake an
+  unchanged incident, default 900 s), `MAIN_WATCH_SCAN_LINES` (pane lines
+  scanned, default 50), `MAIN_WATCH_TICKS` (test bound, 0 = unbounded). Spec:
+  `specs/orchestrator-stall-recovery/`.
 
 ### Child model and thinking levels
 

@@ -46,7 +46,7 @@ JSON
 # trust harness is in the list for the other half of the same rule: it pins
 # its own two mappings and ignores an ambient SUB_LEVELS_CONFIG, so it must
 # stay green under one too.
-LAUNCH_SUITES="task-levels launch-confirm spawn-base-fallback spawn-kickoff-brief free-limit-fallback sub-common"
+LAUNCH_SUITES="task-levels launch-confirm spawn-base-fallback spawn-kickoff-brief free-limit-fallback sub-common main-watch"
 TRUST_HARNESS=specs/fix-worktree-trust-prompt/test_spawn_trust.sh
 
 run_under_mutation() { # <path-to-suite>
