@@ -940,11 +940,21 @@ tmux_send_shell_line() { # $1=tmux target $2=text [attempts] [settle seconds]
   tmux_send_line "$1" "$2" "${3:-4}" "${4:-1}" shell
 }
 
-# Tail of the task's tmux pane (trailing blank lines dropped), or a note
-# when it isn't running.
-pane_tail() { # $1=task $2=lines
-  local sess
-  sess=$(session_of "$1")
+# ---------------------------------------------------------------------------
+# Pane probes
+#
+# Every probe exists twice: `<name>_in <session> …` takes a tmux target — a
+# child's `pi-<task>` session, or any other session (the orchestrator watcher
+# passes its exact `=<session>:` pane target) — and `<name> <task> …` resolves
+# the task's child session through session_of. The wrappers are the whole child
+# surface and behave exactly as before the split; a caller that is not
+# addressing a child uses the `_in` form instead of inventing a task name.
+# ---------------------------------------------------------------------------
+
+# Tail of a session's pane (trailing blank lines dropped), or a note when it
+# isn't running.
+pane_tail_in() { # $1=session $2=lines
+  local sess=$1
   if tmux has-session -t "$sess" 2>/dev/null; then
     tmux capture-pane -t "$sess" -p | awk -v n="$2" '
       { if ($0 ~ /[^[:space:]]/) last=NR; line[NR]=$0 }
@@ -953,6 +963,11 @@ pane_tail() { # $1=task $2=lines
   else
     info "(tmux session $sess is not running)"
   fi
+}
+
+# Tail of the task's tmux pane.
+pane_tail() { # $1=task $2=lines
+  pane_tail_in "$(session_of "$1")" "$2"
 }
 
 # Signature of pi's free-provider failures in a pane: the JSON error type of
@@ -964,30 +979,35 @@ pane_tail() { # $1=task $2=lines
 # of the whole scrollback.
 _FALLBACK_ERROR_RE='FreeUsageLimitError|FreeTierError|(^|[^0-9])429([^0-9]|$).*([Rr]ate[ -]?limit|[Tt]oo [Mm]any [Rr]equests)'
 
-# Echo the last non-empty line currently shown in the task's pane — pi draws
-# its status bar (path, token stats, model • thinking) there. Nothing when
-# the session is not running.
-pane_last_line() { # $1=task
-  local sess
-  sess=$(session_of "$1")
-  tmux has-session -t "$sess" 2>/dev/null || return 0
-  tmux capture-pane -t "$sess" -p 2>/dev/null \
-    | awk 'NF { last=$0 } END { if (last != "") print last }'
+# True when a session's pane tail shows a free-provider failure.
+pane_has_free_limit_error_in() { # $1=session [$2=scan lines]
+  local sess=$1 lines=${2:-50}
+  pane_tail_in "$sess" "$lines" | grep -qE -- "$_FALLBACK_ERROR_RE"
 }
 
 # True when the task's pane tail shows a free-provider failure.
 pane_has_free_limit_error() { # $1=task [$2=scan lines]
-  local task=$1 lines=${2:-50}
-  pane_tail "$task" "$lines" | grep -qE -- "$_FALLBACK_ERROR_RE"
+  pane_has_free_limit_error_in "$(session_of "$1")" "${2:-50}"
 }
 
 # True when the task's pane tail shows pi rejecting a thinking level the
 # current model does not support (configured fallbackThinking drift).
 _FALLBACK_THINKING_ERROR_RE='Error: Unknown thinking level'
 
-pane_thinking_level_rejected() { # $1=task [$2=scan lines]
-  local task=$1 lines=${2:-50}
-  pane_tail "$task" "$lines" | grep -qF -- "$_FALLBACK_THINKING_ERROR_RE"
+# True when a session's pane tail shows that rejection.
+pane_thinking_level_rejected_in() { # $1=session [$2=scan lines]
+  local sess=$1 lines=${2:-50}
+  pane_tail_in "$sess" "$lines" | grep -qF -- "$_FALLBACK_THINKING_ERROR_RE"
+}
+
+# Echo the last non-empty line currently shown in a session's pane — pi draws
+# its status bar (path, token stats, model • thinking) there. Nothing when the
+# session is not running.
+pane_last_line_in() { # $1=session
+  local sess=$1
+  tmux has-session -t "$sess" 2>/dev/null || return 0
+  tmux capture-pane -t "$sess" -p 2>/dev/null \
+    | awk 'NF { last=$0 } END { if (last != "") print last }'
 }
 
 # True when the task's status bar shows the model. pi renders the model id
@@ -998,11 +1018,11 @@ pane_thinking_level_rejected() { # $1=task [$2=scan lines]
 # "(provider) " and " • level"). A fixed substring match would read the free
 # variant "mimo-v2.6-flash-free" as "mimo-v2.6-flash" (a strict prefix) and
 # wrongly report the child as already on the fallback model.
-pane_shows_model() { # $1=task $2=model
-  local task=$1 model=$2 last id re
+pane_shows_model_in() { # $1=session $2=model
+  local sess=$1 model=$2 last id re
   id=${model##*/}
   [ -n "$id" ] || return 1
-  last=$(pane_last_line "$task")
+  last=$(pane_last_line_in "$sess")
   [ -n "$last" ] || return 1
   # Escape everything outside the id alphabet so the id matches literally.
   re=$(printf '%s' "$id" | sed 's/[^A-Za-z0-9_-]/\\&/g')
@@ -1011,13 +1031,154 @@ pane_shows_model() { # $1=task $2=model
 
 # True when the task's status bar shows the thinking level. pi renders it
 # after a bullet ("model • max"); "off" renders as "model • thinking off".
-pane_shows_thinking() { # $1=task $2=level
+pane_shows_thinking_in() { # $1=session $2=level
   local last
-  last=$(pane_last_line "$1")
+  last=$(pane_last_line_in "$1")
   [ -n "$last" ] || return 1
   if [ "$2" = off ]; then
     grep -qF -- '• thinking off' <<<"$last"
   else
     grep -qF -- "• $2" <<<"$last"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Free-provider recovery mechanics
+#
+# Shared by sub-fallback.sh (recovering a child) and main-watch.sh (recovering
+# the orchestrator's own session). The *policy* — which pane text counts as the
+# failure, and when an attempt is due — stays with each caller: the child
+# re-checks its pane with the loose probe, the orchestrator watcher uses its
+# strict `Error: ` banner detector. Only the mechanics below are shared, so a
+# change to the switch or its confirmation can never fix one caller and miss
+# the other. The timing knobs are the child helper's own
+# (FALLBACK_PROBE_ATTEMPTS, FALLBACK_PROBE_DELAY, FALLBACK_SEND_ATTEMPTS); the
+# values below apply when a caller does not set them.
+# ---------------------------------------------------------------------------
+
+# Discard whatever is left in the composer after a send that could not be
+# confirmed, so a parked slash command can never be submitted later by an
+# unrelated Enter (pi's editor deleteToLineStart binding is ctrl+u).
+clear_composer() { # $1=tmux target
+  tmux send-keys -t "$1" C-u 2>/dev/null || true
+}
+
+# Wait for a switch to show up in the status bar, nudging the verified line
+# with bare Enters while it has not. tmux_send_line confirms the pane reacted
+# to Enter, but pi's argument completion can consume an Enter as "close the
+# popup" without submitting the command (observed in a real TUI: the pane
+# changes, the line stays in the composer). The status bar is the ground
+# truth, so poll it; the nudged line was just verified present, so an extra
+# Enter cannot submit anything else.
+confirm_model_in() { # $1=tmux target $2=model
+  local target=$1 model=$2 attempt i
+  local attempts=${FALLBACK_SEND_ATTEMPTS:-4} tries=${FALLBACK_PROBE_ATTEMPTS:-10} delay=${FALLBACK_PROBE_DELAY:-0.5}
+  for (( attempt = 0; attempt <= attempts; attempt++ )); do
+    if [ "$attempt" -gt 0 ]; then
+      tmux send-keys -t "$target" Enter
+      sleep "$delay"
+    fi
+    for (( i = 0; i < tries; i++ )); do
+      pane_shows_model_in "$target" "$model" && return 0
+      sleep "$delay"
+    done
+  done
+  return 1
+}
+
+# Returns 0 once the level shows in the status bar, 2 when pi rejected it
+# (Error: Unknown thinking level — a fallbackThinking that does not match the
+# model now in effect, i.e. a config.json problem, not a delivery problem:
+# stop instead of nudging a command the TUI will never accept), 1 when it
+# could not be confirmed at all.
+confirm_thinking_in() { # $1=tmux target $2=thinking $3=scan lines
+  local target=$1 thinking=$2 lines=${3:-50} attempt i
+  local attempts=${FALLBACK_SEND_ATTEMPTS:-4} tries=${FALLBACK_PROBE_ATTEMPTS:-10} delay=${FALLBACK_PROBE_DELAY:-0.5}
+  for (( attempt = 0; attempt <= attempts; attempt++ )); do
+    if [ "$attempt" -gt 0 ]; then
+      tmux send-keys -t "$target" Enter
+      sleep "$delay"
+    fi
+    for (( i = 0; i < tries; i++ )); do
+      pane_shows_thinking_in "$target" "$thinking" && return 0
+      pane_thinking_level_rejected_in "$target" "$lines" && return 2
+      sleep "$delay"
+    done
+  done
+  return 1
+}
+
+# Recover a pane stuck on a free-provider failure: switch pi to $2 through the
+# verified send, confirm the switch in the status bar, then apply $3 — a level
+# the new model already landed on is left alone, and a thinking problem never
+# turns a recovered session into a failed recovery. Never speculative: the
+# caller decides that the failure is visible; only the already-on guard here
+# can stop a send.
+#
+# Outcome codes: 0 switched (thinking set, already in effect, or nothing
+# configured), 5 already on the fallback model (nothing sent), 1 model switch
+# unconfirmed, 2 switch confirmed but /thinking rejected, 3 no fallback model
+# configured (nothing sent), 4 switch confirmed but /thinking unconfirmed. The
+# composer is cleared on every unconfirmed or rejected path, so a parked slash
+# command can never be submitted by a later, unrelated Enter.
+free_provider_recover() { # $1=tmux target $2=model $3=thinking $4=scan lines
+  local target=$1 model=$2 thinking=$3 lines=${4:-50} t_rc
+  # No configured fallback: nothing is or can be sent.
+  [ -n "$model" ] || return 3
+  # Re-running after a successful (or externally performed) switch is a no-op.
+  if pane_shows_model_in "$target" "$model"; then
+    info "$target is already on fallback model $model — no model switch performed"
+    return 5
+  fi
+  if tmux_send_line "$target" "/model $model" && confirm_model_in "$target" "$model"; then
+    info "switched $target to fallback model $model"
+  else
+    clear_composer "$target"
+    return 1
+  fi
+  # Thinking comes after the model switch: pi clamps the session's current
+  # level to the new model's range on /model, so if the clamp already lands on
+  # the configured level there is nothing to send. Otherwise apply it, still
+  # confirming against the status bar. This is a refinement, not the recovery —
+  # a level pi rejects is reported as the config problem it is, and any other
+  # unconfirmed send surfaces as its own outcome.
+  [ -n "$thinking" ] || return 0
+  if pane_shows_thinking_in "$target" "$thinking"; then
+    info "thinking level already $thinking — nothing to change"
+    return 0
+  fi
+  t_rc=0
+  if tmux_send_line "$target" "/thinking $thinking"; then
+    confirm_thinking_in "$target" "$thinking" "$lines" || t_rc=$?
+  else
+    t_rc=1
+  fi
+  case $t_rc in
+    0) info "thinking level set to $thinking" ;;
+    2) clear_composer "$target"; return 2 ;;
+    *) clear_composer "$target"; return 4 ;;
+  esac
+  return 0
+}
+
+# The one place the failure sentences live, so every caller's operator message
+# cannot drift: $1 is a free_provider_recover outcome code, $2 the tmux target,
+# $3 the fallback model, $4 the noun for the recovered session (default
+# `child`), and $5 the thinking level the attempt applied — only the two
+# thinking sentences name it, and an absent or empty level keeps the neutral
+# wording. The level is an argument, not state: a caller formats a sentence
+# from what it passed to the recovery, never from whatever ran last. Callers
+# decide whether the sentence is a warning or a hard error.
+free_provider_failure_message() { # $1=code $2=target $3=model [$4=role] [$5=thinking]
+  local code=$1 target=$2 model=$3 role=${4:-child} level=${5:-the configured level}
+  case $code in
+    2) printf "%s rejected thinking level '%s' (pi: %s) — fallbackThinking in %s does not match fallbackModel %s; the model switch alone recovered the %s" \
+         "$target" "$level" "$_FALLBACK_THINKING_ERROR_RE" "$(levels_config)" "$model" "$role" ;;
+    4) printf 'could not confirm /thinking %s in %s — check the pane' \
+         "$level" "$target" ;;
+    3) printf 'free-provider failure detected in %s, but no fallbackModel is configured in %s — no model switch performed' \
+         "$target" "$(levels_config)" ;;
+    *) printf 'sent /model %s to %s, but its status bar still does not show it — check the pane' \
+         "$model" "$target" ;;
+  esac
 }

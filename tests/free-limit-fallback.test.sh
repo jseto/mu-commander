@@ -5,6 +5,13 @@
 # One test per Scenario in
 # specs/free-limit-fallback/free-limit-fallback.feature.
 #
+# This suite is also the regression seam for specs/orchestrator-stall-recovery
+# [REQ-26]: the child recovery now delegates its switch/confirm/thinking
+# mechanics to _sub-common.sh's free_provider_recover, and these scenarios are
+# what prove the child's observables — argv, wording, exit codes, the loose
+# detect gate, the already-on no-op and the config-problem degradation — did
+# not move with it.
+#
 # The resolver tests source scripts/_sub-common.sh with SUB_FALLBACK_*/
 # SUB_LEVELS_CONFIG cleared (like tests/task-levels.test.sh); a test that
 # needs a config writes a fixture under $SCRATCH or $SB — the shipped root
