@@ -895,10 +895,13 @@ Given only that, the main session fills in the rest itself:
 1. **Locate the repo** — resolve `project alpha` to its checkout (e.g.
    `~/programming-projects/project-alpha`); it is the cwd only if you are
    already in it, otherwise pass it explicitly.
-2. **Fetch the requirements** — read the issue
-   (`gh issue view 42 -R <owner/project-alpha>`, or the tracker/TUI of
-   choice) and turn it into the requirements paragraph; if the issue cannot
-   be read, ask instead of guessing.
+2. **Read the issue** (`gh issue view 42 -R <owner/project-alpha>`, or the
+   tracker/TUI of choice) — only to confirm it can be read and to evaluate
+   the task's difficulty for `--level`. Do **not** turn it into a
+   requirements paragraph or add anything to it: the brief passes the user's
+   input and the issue reference **as-is** (see the no-contamination rule
+   below), and the child explores the issue itself. If the issue cannot be
+   read, ask instead of guessing.
 3. **Infer the task name** from issue + repo (see Naming below), e.g.
    `alpha-42-fix-utf8-login`.
 4. Write the brief to `tmp/pi-sub/tasks/<task>.md`, run
@@ -918,8 +921,8 @@ name from the task.)
 
 Steps:
 1. Pick a kebab-case task name (see Naming in AGENTS.md).
-2. Write the full requirements to tmp/pi-sub/tasks/<task-name>.md, including the
-   instruction to write the final report to tmp/pi-sub/reports/<task-name>.md.
+2. Write the user's input as-is to tmp/pi-sub/tasks/<task-name>.md (plus the
+   mechanical deliverables: report path).
 3. Run: "$SCRIPTS/sub-spawn.sh" <task-name> <repo>
    (leases the worktree holder <task-name>, bases it on the resolved base
    branch, boots pi in tmux session pi-<task-name>, kicks the child off with
@@ -938,7 +941,8 @@ path, branch, and session name.
 ```
 
 Include more than the minimal trigger only when something must be explicit:
-the **requirements** if they aren't in a readable issue, the **repo** if it
+the **requirements** if they aren't in a readable issue (the user's own
+words, passed verbatim — never deduced or expanded), the **repo** if it
 is ambiguous, the **report path** if it should differ from the default
 (`tmp/pi-sub/reports/<task-name>.md`), or a **task name** when it must match an
 external identifier.
@@ -947,10 +951,24 @@ external identifier.
 do not copy the new-feature-fix → implement → code-auditor steps — or any other
 process description — into `tmp/pi-sub/tasks/<task>.md`. The child gets the
 flow from the **project's own `AGENTS.md`**, which it reads at startup; the
-brief carries only the *what*: the requirement/issue, context/constraints, and
-deliverables (branch, PR, report path). One line suffices — e.g. *"Follow the
+brief carries only the *what*: the requirement/issue and the deliverables
+(branch, PR, report path). One line suffices — e.g. *"Follow the
 `new-feature-fix` flow per this repo's AGENTS.md."* Never re-derive in a brief a
 process the repo already documents.
+
+**Briefs pass the user's input as-is — no contamination** (user directive,
+2026-10-20: "you should not brief nor instruct the children about how to
+proceed with an issue, feature or user input. Pass as it is to the children so
+they can explore by themselves without contamination coming from you"): a
+brief contains the user's words and the issue/feature reference **verbatim**,
+plus the mechanical deliverables (change vs read-only, report path) — nothing
+else. Never paraphrase an issue into a requirements paragraph, and never add
+context, related-issue hints, scope deductions, design guesses, or "ask if
+ambiguous" guidance: the child explores the issue itself and asks the user
+through the normal `QUESTION:` channel when it needs to. The main session's
+**only** reasoning about an incoming task is reading to evaluate its
+difficulty and assign the proper level (`--level`) to the child. A brief that
+adds anything beyond the user's input is a bug, not helpfulness.
 
 **The kickoff defers to the brief.** `sub-spawn.sh` builds one kickoff and
 hands it to every child as pi's initial message. It names the brief as the
