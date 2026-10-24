@@ -591,6 +591,22 @@ inherits `defaultThinkingLevel` / `modelThinkingLevels` / `defaultProjectTrust`
 from the global pi settings instead — no config problem can break a spawn.
 Spec: `specs/child-task-levels/`, tests: `tests/task-levels.test.sh`.
 
+**Every spawn passes `--level`, and the level is always an evaluation, never
+an omission** (user directive, 2026-10-25: "Why didn't you evaluate the
+difficulty" / "Yes, please as the children can autorecover from
+FreeUsageLimitError"). State the level (and, in a word, why) in the brief or
+the spawn report so the difficulty judgement is auditable. An override is
+never a substitute for the level: when a model/thinking override is genuinely
+needed it is passed **on top of** `--level <name>`, so the launch line still
+records which difficulty the task was judged to be. In particular, a
+free-provider `FreeUsageLimitError` (HTTP 429) is **not** a reason to spawn on
+an overridden model: the child stall watcher detects the failure and
+`sub-fallback.sh` recovers the child to the configured fallback model, so the
+level's own mapping is used first and the machinery handles a stall. Never
+spawn a child without a level because the free tier looked exhausted, and
+never leave the level to `taskLevels.default` when the task's difficulty has
+been judged.
+
 **Free-provider fallback.** The free provider mapped to `easy` (whatever
 `taskLevels.levels.easy.model` currently names in `config.json`) can exhaust
 its quota and answer
