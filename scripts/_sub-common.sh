@@ -11,6 +11,7 @@ _SUB_MAIN_SESSION_WAS_SET=${MAIN_SESSION+x}
 : "${MAIN_PANE:=}"               # stable orchestrator pane ID, when known
 : "${PI_BIN:=pi}"                # pi executable
 : "${PI_BOOT_DELAY:=3}"          # seconds to wait for the pi TUI to boot
+: "${PI_BOOT_VERIFY_SECONDS:=10}" # extra window to confirm pi is running before a spawn reports handles
 : "${SCRATCH_DIR:=tmp/pi-sub}"      # gitignored scratch dir in the main checkout
 
 # This script's own directory: anchors repo-local defaults (the child
@@ -252,24 +253,105 @@ child_subagents_source() {
   printf 'npm:@tintinweb/pi-subagents'
 }
 
-# the options — before the kickoff message argument — so pi parses them as
-# options, not as part of the prompt.
-pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
-  local subagents_opt="" source
-  source=$(child_subagents_source)
-  [ -n "$source" ] && subagents_opt=" -e $(printf '%q' "$source")"
-  if [ -n "${3:-}" ]; then
-    printf '%q -n %q --no-extensions%s %s --approve %q' "$1" "$2" "$subagents_opt" "$3" "$4"
+# Echo the installed directory of an npm spec (name or name@version, scoped
+# names included), or fail when it is not installed. Children load configured
+# extensions from this local install instead of letting pi fetch them again:
+# `-e npm:<name>` would install into the child's throwaway agent directory on
+# every spawn (a registry round-trip that fails offline), while a directory is
+# loaded as-is.
+npm_installed_dir() { # $1=name[@version]
+  local spec=$1 root="$HOME/.pi/agent/npm/node_modules" trimmed
+  [ -d "$root/$spec" ] && { printf '%s' "$root/$spec"; return 0; }
+  case $spec in
+    *@*)
+      trimmed=${spec%@*}
+      if [ -n "$trimmed" ] && [ -d "$root/$trimmed" ]; then
+        printf '%s' "$root/$trimmed"
+        return 0
+      fi
+      ;;
+  esac
+  return 1
+}
+
+# Resolve one configured extension source to the word `-e` should load: an
+# `npm:<name>` installed under the user's pi npm dir becomes that package's
+# directory, anything else (a path, a git source, an uninstalled npm spec) is
+# passed to pi verbatim so pi resolves it its own way. Never fails.
+local_extension_source() { # $1=source
+  local src=$1 name dir
+  case $src in
+    npm:?*) ;;
+    *) printf '%s' "$src"; return 0 ;;
+  esac
+  name=${src#npm:}
+  if dir=$(npm_installed_dir "$name"); then
+    printf '%s' "$dir"
   else
-    printf '%q -n %q --no-extensions%s --approve %q' "$1" "$2" "$subagents_opt" "$4"
+    printf '%s' "$src"
+  fi
+}
+
+# Echo the extension sources a child is allowed to load beyond the subagents
+# extension, one per line. Configuration, not code (AGENTS.md, "Child allowed
+# extensions"): SUB_CHILD_ALLOWED_EXTENSIONS — when set, even to the empty
+# string — wins; otherwise .childrenAllowedExtensions in the levels config; a
+# missing key means none. A malformed config never breaks a spawn: it warns on
+# stderr and yields nothing, so the child boots exactly as before.
+resolve_child_allowed_extensions() {
+  local cfg entry
+  local -a entries=()
+  if [ -n "${SUB_CHILD_ALLOWED_EXTENSIONS+set}" ]; then
+    read -r -a entries <<<"${SUB_CHILD_ALLOWED_EXTENSIONS//,/ }" || true
+  else
+    cfg=$(levels_config)
+    [ -f "$cfg" ] || return 0
+    if ! jq -e . "$cfg" >/dev/null 2>&1; then
+      warn "config.json invalid: $cfg — child gets no configured extensions"
+      return 0
+    fi
+    if jq -e 'has("childrenAllowedExtensions")' "$cfg" >/dev/null 2>&1; then
+      if ! jq -e '(.childrenAllowedExtensions | type) == "array"' "$cfg" >/dev/null 2>&1; then
+        warn "config.json invalid: $cfg — childrenAllowedExtensions is not an array"
+        return 0
+      fi
+      while IFS= read -r entry; do
+        entries+=("$entry")
+      done < <(jq -r '.childrenAllowedExtensions[] | select(type == "string")' "$cfg" 2>/dev/null || true)
+    fi
+  fi
+  for entry in ${entries[@]+"${entries[@]}"}; do
+    [ -n "$entry" ] || continue
+    local_extension_source "$entry"
+    printf '\n'
+  done
+}
+
+# the options — before the kickoff message argument — so pi parses them as
+# options, not as part of the prompt. `ext_opt` carries every explicit `-e`
+# (the mandatory subagents extension first, then the child's allowed
+# extensions): --no-extensions keeps every *other* extension off.
+pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
+  local ext_opt="" source
+  source=$(child_subagents_source)
+  [ -n "$source" ] && ext_opt=" -e $(printf '%q' "$source")"
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    ext_opt+=" -e $(printf '%q' "$source")"
+  done < <(resolve_child_allowed_extensions)
+  if [ -n "${3:-}" ]; then
+    printf '%q -n %q --no-extensions%s %s --approve %q' "$1" "$2" "$ext_opt" "$3" "$4"
+  else
+    printf '%q -n %q --no-extensions%s --approve %q' "$1" "$2" "$ext_opt" "$4"
   fi
 }
 
 # Prepare an isolated Pi agent directory for a child. It preserves non-extension
 # resources such as settings metadata, custom agent definitions, skills,
 # prompts, and themes, but gives the child no extensions or packages at all —
-# @tintinweb/pi-subagents, the one extension children load, is passed on the
-# launch line instead (pi_launch_command). Linking `agents` exposes the user's
+# the extensions a child runs, @tintinweb/pi-subagents plus the configured
+# allowed extensions, are passed on the launch line instead (pi_launch_command).
+# Linking `agents` exposes the user's
 # custom agent types (the nff-* definitions the flow names) to the child;
 # project-level .pi/agents definitions keep being discovered from the child's
 # worktree, where they override the user-level ones.
@@ -968,6 +1050,40 @@ pane_tail_in() { # $1=session $2=lines
 # Tail of the task's tmux pane.
 pane_tail() { # $1=task $2=lines
   pane_tail_in "$(session_of "$1")" "$2"
+}
+
+# The command a pane currently runs (empty when tmux cannot report it).
+pane_command_in() { # $1=tmux target
+  tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null || true
+}
+
+# Shells and other interactive non-TUI programs a pane may run instead of pi.
+# A deny-list, not `== pi`: pi is a launcher symlink on some hosts and a
+# node/bun-exec'd process on others, where pane_current_command is `node`.
+_PANE_NOT_PI_RE='^(sh|bash|zsh|fish|dash|ksh|tcsh|csh|nu|elvish|xonsh|tmux|screen)$'
+
+# True when a pane command is pi-like: non-empty and not on the deny-list.
+pane_command_is_pi() { # $1=pane_current_command
+  local cmd=${1,,}
+  [ -n "$cmd" ] || return 1
+  [[ ! $cmd =~ $_PANE_NOT_PI_RE ]]
+}
+
+# Wait for a session's pane to be running pi. Returns 0 as soon as it is, 1
+# when the window expires with the pane still not pi-like (pi exited and the
+# shell is back), and 2 when the pane's command cannot be read at all — a
+# caller must never treat 2 as a failed boot (a real tmux always reports it,
+# but a fixture pane or a degraded server may not). $2=0 checks once.
+wait_for_child_pi() { # $1=session $2=seconds
+  local sess=$1 secs=${2:-0} deadline cmd
+  deadline=$((SECONDS + secs))
+  while :; do
+    cmd=$(pane_command_in "$sess")
+    [ -n "$cmd" ] || return 2
+    pane_command_is_pi "$cmd" && return 0
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 0.25
+  done
 }
 
 # Signature of pi's free-provider failures in a pane: the JSON error type of

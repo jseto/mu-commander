@@ -276,6 +276,16 @@ done
 
 agent_dir=${PI_CODING_AGENT_DIR:-${HOME:?HOME not set}/.pi/agent}
 
+# A real pi keeps the pane while it runs. The spawn now verifies that the
+# child pane is actually running pi (`specs/spawn-boot-verify`), so when the
+# stub is booted inside the child pane it must stay resident after printing;
+# a direct call (scenario_kickoff_parsing) must still return its output and
+# exit.
+stay_resident() {
+  [ "${STUB_STAY_RESIDENT:-0}" = 1 ] || return 0
+  exec sleep 300
+}
+
 protected=0
 for res in .pi/settings.json .pi/extensions .pi/skills .pi/prompts \
            .pi/themes .pi/SYSTEM.md .pi/APPEND_SYSTEM.md; do
@@ -283,8 +293,7 @@ for res in .pi/settings.json .pi/extensions .pi/skills .pi/prompts \
 done
 
 resolved=""
-if [ "$protected" = 0 ]; then
-  resolved="no protected resources"
+if [ "$protected" = 0 ]; then  resolved="no protected resources"
 elif [ "$approved" = 1 ]; then
   resolved="command-line override"
 else
@@ -309,6 +318,7 @@ fi
 if [ -n "$resolved" ]; then
   printf 'PI-STUB: trust resolved (%s); prompt suppressed\n' "$resolved"
   printf 'PI-STUB: kickoff accepted: %s\n' "$kickoff"
+  stay_resident
   exit 0
 fi
 
@@ -332,6 +342,7 @@ if read -r _keystroke; then
   printf '{"%s": true}\n' "$PWD" > "$store"
   printf 'PI-STUB: trust granted by keystroke and persisted to trust.json\n'
   printf 'PI-STUB: kickoff accepted: %s\n' "$kickoff"
+  stay_resident
   exit 0
 fi
 printf 'PI-STUB: session closed with the trust prompt unanswered\n'
@@ -412,6 +423,7 @@ run_spawn() {
     STUB_POOL="$SANDBOX/pool" \
     STUB_ORIGIN="$SANDBOX/origin.git" \
     SUB_SPAWN_NO_VIEWER=1 \
+    STUB_STAY_RESIDENT=1 \
     PI_BOOT_DELAY=2 \
     bash "$SPAWN" "$task" "$MAIN" "$BRIEF" > "$SANDBOX/spawn.out" 2>&1
 }

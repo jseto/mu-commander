@@ -60,7 +60,9 @@ resolve() {
 
 # launch <flags> [VAR=val ...] — pi_launch_command with a fixed bin/task/kickoff,
 # run with $HOME redirected to $LAUNCH_HOME (a package-free scratch dir by
-# default) so the child_subagents_source presence check is deterministic;
+# default) so the child_subagents_source presence check is deterministic, and
+# with the level config pinned to the fixture mapping so the shipped
+# config.json's allowed extensions can never change the expected line;
 # extra VAR=val pairs become environment. Sets: RC, OUT, LAUNCH_KICKOFF.
 launch() {
   local flags=$1 kickoff="Read the task brief at /tmp/x.md and complete it."
@@ -68,7 +70,7 @@ launch() {
   shift
   mkdir -p "$home"
   RC=0
-  OUT=$(env -u SUB_CHILD_SUBAGENTS HOME="$home" "$@" \
+  OUT=$(env -u SUB_CHILD_SUBAGENTS HOME="$home" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE" "$@" \
     bash -c "source '$COMMON'; pi_launch_command pi demo $(printf '%q' "$flags") $(printf '%q' "$kickoff")") \
     || RC=$?
   LAUNCH_KICKOFF=$kickoff
