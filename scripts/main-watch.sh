@@ -191,14 +191,10 @@ mw_session_alive() { tmux has-session -t "$MW_SESSION_TARGET" 2>/dev/null; }
 # Shells and other interactive non-TUI programs a pane may run instead of pi.
 # A deny-list, not `== pi`: pi is a launcher symlink on some hosts and a
 # node/bun-exec'd process on others, where `pane_current_command` is `node`.
-_MW_NOT_PI_RE='^(sh|bash|zsh|fish|dash|ksh|tcsh|csh|nu|elvish|xonsh|tmux|screen)$'
-
-# True when a pane command is pi-like: non-empty and not on the deny-list
-# (case-insensitive), so every other command counts as pi.
+# The rule itself lives in _sub-common.sh (pane_command_is_pi) so the spawn's
+# boot verification and this watcher can never disagree about what pi is.
 mw_command_is_pi() { # $1=pane_current_command
-  local cmd=${1,,}
-  [ -n "$cmd" ] || return 1
-  [[ ! $cmd =~ $_MW_NOT_PI_RE ]]
+  pane_command_is_pi "${1:-}"
 }
 
 # True when the pinned window's pane is pi-like (the probe lavish_wake_child
@@ -206,9 +202,7 @@ mw_command_is_pi() { # $1=pane_current_command
 # a shell is never typed into — the watcher keeps watching instead of exiting,
 # because pi may still come back.
 mw_pane_is_pi() {
-  local cmd
-  cmd=$(tmux display-message -p -t "$MW_TARGET" '#{pane_current_command}' 2>/dev/null || true)
-  mw_command_is_pi "$cmd"
+  pane_command_is_pi "$(pane_command_in "$MW_TARGET")"
 }
 
 # Re-pin from the same resolver once and report whether that pane is pi-like.

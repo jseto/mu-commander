@@ -1,4 +1,7 @@
 {
+  "childrenAllowedExtensions": [
+    "npm:pi-free-provider"
+  ],
   "taskLevels": {
     "default": "standard",
     "fallbackModel": "opencode-go/deepseek-v4.1-flash",
@@ -6,18 +9,18 @@
     "levels": {
       "easy": {
         "description": "Chores, trims, config and docs edits, small fixes.",
-        "model": "opencode-zen-free/mimo-v2.6-flash-free",
-        "thinking": "high"
+        "model": "zenfree/deepseek-v4.1-flash-free",
+        "thinking": "low"
       },
       "standard": {
         "description": "Features and bug fixes with the full specs flow.",
-        "model": "opencode-zen-free/deepseek-v4.1-flash-free",
+        "model": "zenfree/deepseek-v4.1-flash-free",
         "thinking": "high"
       },
       "hard": {
         "description": "Architecture, root-cause analysis, long-haul work.",
         "model": "opencode-go/deepseek-v4.1-flash",
-        "thinking": "high"
+        "thinking": "max"
       }
     }
   }

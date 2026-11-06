@@ -205,6 +205,26 @@ tmux_send_shell_line "$SESS" "$PI_LAUNCH" \
 info "Waiting ${PI_BOOT_DELAY}s for pi to boot ..."
 sleep "$PI_BOOT_DELAY"
 
+# 5a. Verify the child pane is actually running pi. The launch confirmation
+#     proves only that the shell ran the line — a pi that dies during startup
+#     (an unknown --model, a bad extension) leaves the pane back at a shell
+#     prompt and satisfies that confirmation just as well. Reporting handles
+#     for such a child leaves the orchestrator driving a dead pane, so the
+#     spawn fails here instead, naming the pane's own last lines as the reason
+#     and releasing the lease/session/agent dir through the EXIT trap. A slow
+#     boot is given PI_BOOT_VERIFY_SECONDS more; a pane whose command cannot
+#     be read is assumed healthy (a real tmux always reports it).
+BOOT_STATE=0
+wait_for_child_pi "$SESS" "$PI_BOOT_VERIFY_SECONDS" || BOOT_STATE=$?
+case $BOOT_STATE in
+  0) : ;;
+  2) warn "cannot read the pane command of $SESS — assuming pi booted" ;;
+  *)
+    die "pi is not running in $SESS — the child exited during startup, so there is no child to report:
+$(pane_tail "$TASK" 20)"
+    ;;
+esac
+
 # 5b. Arm the per-child watcher: ONE window of the child's tmux session (so
 #     it stops when the session is killed on retirement) running the single
 #     watcher process that folds the three watching services — Lavish wake,

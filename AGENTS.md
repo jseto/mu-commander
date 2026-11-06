@@ -259,7 +259,7 @@ SCRIPTS=/home/jseto/programming-projects/mu-commander/scripts
 
 | Script | Does |
 |---|---|
-| `sub-spawn.sh <task> <repo> [brief-file]` | Lease worktree (holder = task), base on `$DEV_BRANCH` (falling back to the `origin/HEAD` default branch when it is gone), write brief, boot `pi -n <task> --no-extensions -e <@tintinweb/pi-subagents src entry> "<kickoff>"` in tmux `pi-<task>` (kickoff passed as pi's initial message, so it cannot strand in the composer) with an isolated agent directory that provides no extensions or packages of its own while retaining non-extension resources (`@tintinweb/pi-subagents` is the one exception: loaded explicitly with `-e`, opt out with `SUB_CHILD_SUBAGENTS=0`), open a live viewer window in the invoking tmux session without stealing the cursor focus (skippable with `SUB_SPAWN_NO_VIEWER=1`), print all handles |
+| `sub-spawn.sh <task> <repo> [brief-file]` | Lease worktree (holder = task), base on `$DEV_BRANCH` (falling back to the `origin/HEAD` default branch when it is gone), write brief, boot `pi -n <task> --no-extensions -e <@tintinweb/pi-subagents src entry> -e <each config.json childrenAllowedExtensions source> "<kickoff>"` in tmux `pi-<task>` (kickoff passed as pi's initial message, so it cannot strand in the composer) with an isolated agent directory that provides no extensions or packages of its own while retaining non-extension resources (`@tintinweb/pi-subagents` and the configured allowed extensions are the exceptions, loaded explicitly with `-e`; opt out of the subagents one with `SUB_CHILD_SUBAGENTS=0`), verify the child pane is actually running pi before reporting anything, open a live viewer window in the invoking tmux session without stealing the cursor focus (skippable with `SUB_SPAWN_NO_VIEWER=1`), print all handles |
 | `sub-status.sh <task> [repo] [lines]` | Lease + git state + pane tail + report tail for one subsession |
 | `sub-changes.sh <task> [repo]` | Read-only: status, commits not on the resolved base branch (`$DEV_BRANCH` or the `origin/HEAD` default), diff stats |
 | `sub-send.sh <task> "message"` | Send a literal follow-up instruction to an existing child pi session and confirm it was submitted (re-types/retries `Enter` via `tmux_send_line`) |
@@ -560,8 +560,9 @@ The difficulty of the task decides the child's model and thinking level.
 The levels live in `config.json` at the repository root — a generic,
 root-level config file that is ready for future general settings: the
 levels are namespaced under its `taskLevels` top-level section, and sibling
-top-level keys hold any future setting without touching the level
-resolution code (unknown keys are ignored). Edit it to retune.
+top-level keys (such as `childrenAllowedExtensions`, below) hold other
+settings without touching the level resolution code (unknown keys are
+ignored). Edit it to retune.
 
 **`config.json` is the single source of truth for the level → model and
 level → thinking mappings: this file names no models and no thinking
@@ -644,6 +645,35 @@ entries drift apart the model switch still recovers the child and the helper
 reports the mismatch as a config problem to fix in `config.json`. Spec:
 `specs/free-limit-fallback/`, tests: `tests/free-limit-fallback.test.sh`.
 
+### Child allowed extensions
+
+A child runs with `--no-extensions` and an isolated agent directory whose
+settings keep `"packages": []`, so **no** extension or package of its own
+loads — that is the isolation `specs/child-agent-definitions` guarantees.
+Some models come from a package rather than pi's built-in catalog or
+`models.json`: an extension that calls `pi.registerProvider()` registers its
+providers only while it runs. With the package hidden, a spawn on such a
+model cannot resolve it and pi exits at startup with
+`Error: Model "…" not found`.
+
+`config.json`'s top-level `childrenAllowedExtensions` array names the
+extension sources a child is **allowed** to load. Each entry rides on the
+child's launch line as `-e <source>`, the same mechanism that loads
+`@tintinweb/pi-subagents`, so those providers resolve while every other
+extension and package stays out (the child's settings still keep
+`"packages": []`). Entries use pi's own package/extension source syntax
+(`npm:<name>`, `git:…`, a path, or a URL); an `npm:` package installed under
+`$HOME/.pi/agent/npm/node_modules` is loaded from that install, so a spawn
+never fetches it from the registry. `SUB_CHILD_ALLOWED_EXTENSIONS` — set,
+even to the empty string — overrides the array for one spawn. A missing key
+means none; an unreadable or malformed config warns and adds nothing, so no
+config problem can break a spawn.
+
+Models the children run on must therefore be resolvable by that set: when
+you map a level to a package-provided model, list its package here. Spec:
+`specs/child-model-resolution/`, tests:
+`tests/child-model-resolution.test.sh`.
+
 ### Orchestrator pattern: main session controls the children
 
 Conventions: the main session lives in tmux session `pi-main`; every child
@@ -676,11 +706,13 @@ while the orchestrator is driving it. **The main session's tmux pane/window must
 That one call leases a worktree (holder `fix-auth`), bases it on the
 resolved base branch (`$DEV_BRANCH`, or the `origin/HEAD` default when that
 branch is gone), writes the brief to `tmp/pi-sub/tasks/fix-auth.md`, boots
-`pi -n fix-auth --no-extensions -e <subagents-src>` in tmux session `pi-fix-auth` **with the tmux session rooted
+`pi -n fix-auth --no-extensions -e <subagents-src> -e <allowed-extension>…` in tmux session `pi-fix-auth` **with the tmux session rooted
 at the leased worktree**, using an isolated agent directory that provides no extensions or
-packages of its own — `@tintinweb/pi-subagents` is the exception, loaded explicitly with `-e`
-(opt out with `SUB_CHILD_SUBAGENTS=0`) —
-while retaining non-extension resources, kicks the child off with the brief/report paths, and prints
+packages of its own — `@tintinweb/pi-subagents` plus the sources in
+`config.json`'s `childrenAllowedExtensions` are the exceptions, loaded
+explicitly with `-e`
+(opt out of the subagents one with `SUB_CHILD_SUBAGENTS=0`) —
+while retaining non-extension resources, kicks the child off with the brief/report paths, verifies the child pane is actually running pi, and prints
 task, worktree, branch, session, brief, and report handles. The child pi
 process therefore starts with the worktree as its current directory, not the
 main checkout. The kickoff is passed to pi as its **initial message
@@ -691,6 +723,18 @@ what the task must deliver and points at this repository's `AGENTS.md` for
 the process: a change brief selects the commit/push/PR deliverable (against
 the resolved base) and a read-only brief selects change-nothing, so the two
 can never contradict each other (`specs/spawn-kickoff-brief/`).
+
+**A spawn only reports handles for a child that is actually running pi.** The
+launch confirmation proves the shell ran the line, which a pi that exits
+during startup satisfies just as well — so after `PI_BOOT_DELAY` the spawn
+polls the child pane's `#{pane_current_command}` (up to
+`PI_BOOT_VERIFY_SECONDS`, default 10 s) and, when the pane is back at a
+shell instead of pi, fails loudly with the pane's last lines as the reason
+and releases the lease, the session, and the agent directory through its
+exit trap. A pane whose command cannot be read is assumed healthy (a real
+tmux always reports it). Never print "Subsession spawned" for a pane that is
+not pi: `specs/spawn-boot-verify/`, tests:
+`tests/spawn-boot-verify.test.sh`.
 
 > **Children always load `@tintinweb/pi-subagents` from its `src` entry**
 > (user directive, 2026-10-17: "let children to load @tintinweb/pi-subagents:src
