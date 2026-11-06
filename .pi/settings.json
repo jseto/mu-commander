@@ -1,6 +1,6 @@
 {
-  "defaultProvider": "opencode-zen-free",
-  "defaultModel": "mimo-v2.6-flash-free",
-  "defaultThinkingLevel": "xhigh",
+  "defaultProvider": "opencode-go",
+  "defaultModel": "deepseek-v4.1-flash",
+  "defaultThinkingLevel": "low",
   "defaultProjectTrust": "always"
 }
