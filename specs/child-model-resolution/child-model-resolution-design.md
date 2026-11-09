@@ -14,8 +14,8 @@ pi boots.
 
 The fix keeps the isolation exactly as it is and adds one explicit channel:
 the **allowed extensions** named in configuration are passed to pi on the
-child's launch line with `-e <source>` — the mechanism already used for
-`@tintinweb/pi-subagents`. Only those load; `packages` stays `[]` and
+child's launch line with `-e <source>`. Only those load; `packages` stays `[]`
+and
 `--no-extensions` stays on the line.
 
 ## Entities
@@ -37,7 +37,7 @@ child's launch line with `-e <source>` — the mechanism already used for
     Malformed JSON or a non-array key warns on stderr (naming `config.json`)
     and yields nothing; a missing key is not an error. Always exits 0.
   - `pi_launch_command` — appends one `-e <quoted source>` per resolved entry,
-    right after the subagents `-e` and before `--model/--thinking`,
+    before `--model/--thinking`,
     `--approve`, and the kickoff, so pi parses them as options.
 - **`tests/child-model-resolution.test.sh`** (new) — one test per scenario,
   hermetic (fixture configs via `SUB_LEVELS_CONFIG`, fixture `$HOME` with and
@@ -51,7 +51,7 @@ flowchart TD
     B --> C{"SUB_CHILD_ALLOWED_EXTENSIONS set?"}
     C -- yes --> E
     C -- no --> D["<levels config>.childrenAllowedExtensions"]
-    D -- missing key --> Z["no -e beyond subagents"]
+    D -- missing key --> Z["no -e at all"]
     D -- malformed / not array --> W["warn on stderr, then no -e"]
     D -- array --> E["for each entry: local_extension_source"]
     E --> F{"npm:<name> installed?"}
@@ -65,7 +65,7 @@ flowchart TD
 Launch line order:
 
 ```
-pi -n <task> --no-extensions [-e <subagents>] [-e <allowed>…]
+pi -n <task> --no-extensions [-e <allowed>…]
    [--model <m>] [--thinking <l>] --approve '<kickoff>'
 ```
 

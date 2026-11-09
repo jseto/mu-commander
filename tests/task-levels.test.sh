@@ -59,18 +59,17 @@ resolve() {
 }
 
 # launch <flags> [VAR=val ...] — pi_launch_command with a fixed bin/task/kickoff,
-# run with $HOME redirected to $LAUNCH_HOME (a package-free scratch dir by
-# default) so the child_subagents_source presence check is deterministic, and
-# with the level config pinned to the fixture mapping so the shipped
-# config.json's allowed extensions can never change the expected line;
-# extra VAR=val pairs become environment. Sets: RC, OUT, LAUNCH_KICKOFF.
+# run against a fixture $HOME (a package-free scratch dir by default) and with
+# the level config pinned to the fixture mapping so the shipped config.json's
+# allowed extensions can never change the expected line; extra VAR=val pairs
+# become environment. Sets: RC, OUT, LAUNCH_KICKOFF.
 launch() {
   local flags=$1 kickoff="Read the task brief at /tmp/x.md and complete it."
   local home=${LAUNCH_HOME:-$SCRATCH/launch-home}
   shift
   mkdir -p "$home"
   RC=0
-  OUT=$(env -u SUB_CHILD_SUBAGENTS HOME="$home" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE" "$@" \
+  OUT=$(env HOME="$home" SUB_LEVELS_CONFIG="$LEVELS_FIXTURE" "$@" \
     bash -c "source '$COMMON'; pi_launch_command pi demo $(printf '%q' "$flags") $(printf '%q' "$kickoff")") \
     || RC=$?
   LAUNCH_KICKOFF=$kickoff
@@ -241,12 +240,11 @@ JSON
     || fail "named level must resolve past sibling keys, got: $OUT"
 }
 
-t_req13_child_launch_loads_pi_subagents() {
-  # The installed @tintinweb/pi-subagents package rides on -e as its src
-  # entry (ahead of the kickoff), SUB_CHILD_SUBAGENTS=0 opts out, and the
-  # install-presence check runs against $LAUNCH_HOME — an install missing
-  # while enabled degrades to a plain launch, which t_req9 already asserts
-  # under the default package-free $LAUNCH_HOME.
+t_req13_child_launch_loads_no_extensions_beyond_the_configured_ones() {
+  # Children never load the subagents extension: even with a
+  # @tintinweb/pi-subagents install present under $LAUNCH_HOME, and even with
+  # SUB_CHILD_SUBAGENTS in the environment, the launch line carries no `-e`
+  # for it (user directive, 2026-11-05).
   local home="$SCRATCH/launch-home-pkg" pkg want
   pkg="$home/.pi/agent/npm/node_modules/@tintinweb/pi-subagents"
   mkdir -p "$pkg/src"
@@ -254,27 +252,13 @@ t_req13_child_launch_loads_pi_subagents() {
   LAUNCH_HOME=$home
 
   launch "--model a/b --thinking xhigh"
-  want="pi -n demo --no-extensions -e $(printf '%q' "$pkg/src/index.ts") --model a/b --thinking xhigh --approve $(printf '%q' "$LAUNCH_KICKOFF")"
-  [ "$OUT" = "$want" ] || fail "installed package must ride on -e ahead of the kickoff,
+  want="pi -n demo --no-extensions --model a/b --thinking xhigh --approve $(printf '%q' "$LAUNCH_KICKOFF")"
+  [ "$OUT" = "$want" ] || fail "no subagents -e may ride on the launch line,
      got: $OUT"
 
-  launch ""
-  want="pi -n demo --no-extensions -e $(printf '%q' "$pkg/src/index.ts") --approve $(printf '%q' "$LAUNCH_KICKOFF")"
-  [ "$OUT" = "$want" ] || fail "installed package must load with no option words,
-     got: $OUT"
-
-  # An install with no src tree (dist-only layout) falls back to the package
-  # spec; `npm:@tintinweb/pi-subagents:src` is not a valid spec (pi hands the
-  # literal remainder to npm install), so it must never appear.
-  rm -f "$pkg/src/index.ts"
-  launch ""
-  want="pi -n demo --no-extensions -e npm:@tintinweb/pi-subagents --approve $(printf '%q' "$LAUNCH_KICKOFF")"
-  [ "$OUT" = "$want" ] || fail "a src-less install must fall back to the package spec,
-     got: $OUT"
-
-  launch "" SUB_CHILD_SUBAGENTS=0
+  launch "" SUB_CHILD_SUBAGENTS=1
   want="pi -n demo --no-extensions --approve $(printf '%q' "$LAUNCH_KICKOFF")"
-  [ "$OUT" = "$want" ] || fail "SUB_CHILD_SUBAGENTS=0 must drop -e,
+  [ "$OUT" = "$want" ] || fail "SUB_CHILD_SUBAGENTS must have no effect,
      got: $OUT"
 }
 
@@ -299,7 +283,7 @@ run "[REQ-9]  launch line carries options ahead of the kickoff"    t_req9_launch
 run "[REQ-10] bad spawn invocations die before any work"           t_req10_bad_spawn_invocations_die_early
 run "[REQ-11] touched scripts shellcheck-clean"                    t_req11_shellcheck_and_bash_n_clean
 run "[REQ-12] unknown sibling top-level keys are ignored"      t_req12_unknown_sibling_top_level_keys_are_ignored
-run "[REQ-13] child launch loads pi-subagents on -e"            t_req13_child_launch_loads_pi_subagents
+run "[REQ-13] child launch loads no subagents extension"         t_req13_child_launch_loads_no_extensions_beyond_the_configured_ones
 
 if [ "$failures" -gt 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"

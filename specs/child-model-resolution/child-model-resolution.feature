@@ -13,8 +13,8 @@ Feature: Load the child's allowed extensions on the launch line (sub-spawn, _sub
 
   The child must therefore load exactly the extensions named in
   configuration — its **allowed extensions** — explicitly, on its launch line
-  (`-e`), the same mechanism that already loads `@tintinweb/pi-subagents` — so
-  those models resolve while the isolation guarantee stays untouched: the
+  (`-e`) — so those models resolve while the isolation guarantee stays
+  untouched: the
   child's `settings.json` still keeps `"packages": []` and the launch line
   still carries `--no-extensions`, so no other configured, discovered, or
   built-in extension sneaks in.

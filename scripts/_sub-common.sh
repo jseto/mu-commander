@@ -225,33 +225,10 @@ resolve_child_launch_flags() { # $1=level $2=model $3=thinking
   return 0
 }
 
-# Echo the subagents source children load explicitly on their launch line, or
-# an empty string when they must start without it: SUB_CHILD_SUBAGENTS=0 opts
-# out, and a missing local install degrades to a plain child instead of failing
-# the spawn. The source is the @tintinweb/pi-subagents package's src entry
-# (user directive, 2026-10-17: "let children to load @tintinweb/pi-subagents:src
-# instead of pi-subagents extension. remember that for the future") — its
-# package manifest declares ./src/index.ts, so naming the file directly is the
-# same extension pi would pick up, minus a version re-resolve on every spawn.
-# `npm:@tintinweb/pi-subagents` is the fallback for an install that ships no
-# src tree. NOTE: `npm:@tintinweb/pi-subagents:src` is NOT a valid spec — pi
-# strips only the `npm:` prefix and hands the rest to npm install verbatim
-# (`npm install @tintinweb/pi-subagents:src` → ENOENT), failing the spawn.
-# pi_launch_command is the only consumer; `-e <source>` gives a child the
-# extension for one invocation while --no-extensions keeps every other
-# discovered, configured, and built-in extension off (docs/packages.md:
-# `pi -e npm:<name>` loads a package without adding it to settings, so the
-# deliberately empty child settings file stays empty).
-child_subagents_source() {
-  [ "${SUB_CHILD_SUBAGENTS:-1}" = 0 ] && return 0
-  local pkg="$HOME/.pi/agent/npm/node_modules/@tintinweb/pi-subagents"
-  if [ -f "$pkg/src/index.ts" ]; then
-    printf '%s' "$pkg/src/index.ts"
-    return 0
-  fi
-  [ -d "$pkg" ] || return 0
-  printf 'npm:@tintinweb/pi-subagents'
-}
+# Children never load the subagents extension (user directive, 2026-11-05: "in
+# subsequent child spawning, do not load subagents extension and remove all
+# references to execute with subagents"): a child boots on exactly the
+# configured allowed extensions, nothing else.
 
 # Echo the installed directory of an npm spec (name or name@version, scoped
 # names included), or fail when it is not installed. Children load configured
@@ -292,8 +269,7 @@ local_extension_source() { # $1=source
   fi
 }
 
-# Echo the extension sources a child is allowed to load beyond the subagents
-# extension, one per line. Configuration, not code (AGENTS.md, "Child allowed
+# Echo the extension sources a child is allowed to load, one per line. Configuration, not code (AGENTS.md, "Child allowed
 # extensions"): SUB_CHILD_ALLOWED_EXTENSIONS — when set, even to the empty
 # string — wins; otherwise .childrenAllowedExtensions in the levels config; a
 # missing key means none. A malformed config never breaks a spawn: it warns on
@@ -328,13 +304,11 @@ resolve_child_allowed_extensions() {
 }
 
 # the options — before the kickoff message argument — so pi parses them as
-# options, not as part of the prompt. `ext_opt` carries every explicit `-e`
-# (the mandatory subagents extension first, then the child's allowed
-# extensions): --no-extensions keeps every *other* extension off.
+# options, not as part of the prompt. `ext_opt` carries one `-e` per configured
+# allowed extension (and nothing else): --no-extensions keeps every *other*
+# extension off.
 pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
   local ext_opt="" source
-  source=$(child_subagents_source)
-  [ -n "$source" ] && ext_opt=" -e $(printf '%q' "$source")"
   while IFS= read -r source; do
     [ -n "$source" ] || continue
     ext_opt+=" -e $(printf '%q' "$source")"
@@ -349,8 +323,8 @@ pi_launch_command() { # $1=pi-bin $2=task $3=option words $4=kickoff
 # Prepare an isolated Pi agent directory for a child. It preserves non-extension
 # resources such as settings metadata, custom agent definitions, skills,
 # prompts, and themes, but gives the child no extensions or packages at all —
-# the extensions a child runs, @tintinweb/pi-subagents plus the configured
-# allowed extensions, are passed on the launch line instead (pi_launch_command).
+# the configured allowed extensions are passed on the launch line instead
+# (pi_launch_command).
 # Linking `agents` exposes the user's
 # custom agent types (the nff-* definitions the flow names) to the child;
 # project-level .pi/agents definitions keep being discovered from the child's

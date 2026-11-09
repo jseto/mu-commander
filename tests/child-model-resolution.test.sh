@@ -78,7 +78,7 @@ launch() {
   local home=${LAUNCH_HOME:-$HOME_FIX}
   shift
   RC=0
-  OUT=$(env -u SUB_CHILD_SUBAGENTS -u SUB_CHILD_ALLOWED_EXTENSIONS HOME="$home" \
+  OUT=$(env -u SUB_CHILD_ALLOWED_EXTENSIONS HOME="$home" \
         SUB_LEVELS_CONFIG="$CFG_NONE" "$@" \
         bash -c "source '$COMMON'; pi_launch_command pi demo $(printf '%q' "$flags") $(printf '%q' "$LAUNCH_KICKOFF")") \
         || RC=$?
@@ -98,7 +98,7 @@ launch_with_stderr() {
   local flags=$1
   shift
   RC=0
-  OUT=$(env -u SUB_CHILD_SUBAGENTS -u SUB_CHILD_ALLOWED_EXTENSIONS HOME="$HOME_FIX" \
+  OUT=$(env -u SUB_CHILD_ALLOWED_EXTENSIONS HOME="$HOME_FIX" \
         SUB_LEVELS_CONFIG="$CFG_NONE" "$@" \
         bash -c "source '$COMMON'; pi_launch_command pi demo $(printf '%q' "$flags") $(printf '%q' "$LAUNCH_KICKOFF")" \
         2>"$SCRATCH/stderr") || RC=$?

@@ -18,8 +18,9 @@ same existence rule as the other names — a missing source directory links
 nothing and is not an error.
 
 Nothing else changes. `extensions/` stays a real, empty directory,
-`settings.json` keeps `packages: []`, and `@tintinweb/pi-subagents` remains
-the one extension a child loads, via `-e` on the launch line. Project-level
+`settings.json` keeps `packages: []`, and a child loads no extension at all
+unless `config.json`'s `childrenAllowedExtensions` names one (no subagents
+extension — user directive, 2026-11-05). Project-level
 agent definitions (`.pi/agents/*.md` in the child's worktree) are discovered
 from the child's working directory, not from the agent dir, and pi's
 precedence keeps project-level definitions overriding global ones — so
@@ -104,9 +105,9 @@ definitions and keeps the prepared directory cheap to build and remove.
 An independent, read-only audit of the landed change (feature file + source +
 tests, blind-then-rationale) returned **no outstanding Strong
 recommendations**: the change adds one name to a data-driven list, introduces
-no new code path, and leaves the interface unchanged. It verified at runtime
-that the subagents extension resolves global agents from the agent dir first
-and then `<cwd>/.pi/agents`, so project-level definitions still win.
+no new code path, and leaves the interface unchanged. It verified the agent-dir
+`agents` link resolves alongside `<cwd>/.pi/agents`, so project-level
+definitions still win.
 
 - **Declined (per the skill's escape hatch):** extracting a shared
   `assert_lint_clean` helper for the per-spec lint gate (an established local
