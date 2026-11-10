@@ -1,4 +1,4 @@
-# approved: 2026-10-20
+# approved: 2026-11-10
 Feature: Watch and recover the orchestrator's own pi session
 
   A free-provider failure can wedge the orchestrator itself. When pi-main's
@@ -63,13 +63,21 @@ Feature: Watch and recover the orchestrator's own pi session
     And no other window is created
     And the output reports the watcher state
 
-  Scenario: An existing main session gains no watcher and is not restarted [REQ-2]
+  Scenario: An existing main session gains a watcher when it has none, and is not restarted [REQ-2]
     Given a running "pi-main" session that has no watcher window
     When the script is run with "--detach"
     Then it exits successfully
-    And the session's window list is unchanged — no watcher window is added
-    And the session's pane process was not restarted
-    And the output names the session and its working directory
+    And the session gains exactly one watcher window
+    And the session's pi pane process was not restarted
+    And the session's window options were not modified
+    And the output names the session and its working directory and reports
+      that the watcher was armed
+    Given a running "pi-main" session whose watcher window is already running
+      the orchestrator watcher
+    When the script is run with "--detach"
+    Then it exits successfully
+    And no second watcher window is added
+    And the existing watcher window is not restarted
 
   Scenario: A free-provider failure rendered by pi in the main pane is detected [REQ-3]
     Given a running "pi-main" session whose pane shows pi's own error render:
@@ -294,13 +302,13 @@ Feature: Watch and recover the orchestrator's own pi session
     Then it types one further wake line so the orchestrator retries its turn
     And it never re-sends "/model" for the same incident
 
-  Scenario: The watcher follows pi's window instead of the session's selection [REQ-33]
+  Scenario: The watcher follows pi's pane instead of the session's selection [REQ-33]
     Given a "pi-main" session whose window list holds the pi window and the
       watch window
     And the operator has selected the watch window as the session's current
       window
     When the watcher scans
-    Then it reads and types into the pi window only
+    Then it reads and types into the pi window's pi pane only
     And it never addresses the session target that follows the selection, nor
       the watch window
     And the visible failure is detected and recovered there
@@ -314,8 +322,8 @@ Feature: Watch and recover the orchestrator's own pi session
       pinning an unverified index
     When it is armed with a window index that its verification probe does not
       confirm
-    Then the unverified index is dropped and the pi window is resolved again
-    And the visible failure is detected and recovered in the pi window
+    Then the unverified index is dropped and the pi pane is resolved again
+    And the visible failure is detected and recovered in the pi pane
     And neither the selected window nor a missing index is ever typed into
 
   Scenario: A different incident is recovered, never merely woken [REQ-35]
@@ -340,3 +348,34 @@ Feature: Watch and recover the orchestrator's own pi session
       counts as pi
     And the failure is detected and recovered there
     And a shell or other interactive non-TUI program is still never typed into
+
+  Scenario: A dead or foreign watch window is replaced with a live watcher [REQ-50]
+    Given a running "pi-main" session whose window named "watch" is not
+      running the orchestrator watcher — its pane is dead, or it was started
+      with another command
+    When the script is run with "--detach"
+    Then it exits successfully
+    And that window's pane is not reused
+    And exactly one window named "watch" runs the orchestrator watcher for the
+      session
+    And the session's pi pane process was not restarted
+
+  Scenario: The watcher targets the pi pane, not the window's active pane [REQ-51]
+    Given a "pi-main" session whose pi window also holds the child-viewer pane
+    And the child-viewer pane is the window's active pane
+    And the pi pane shows pi's free-provider error render
+    When the watcher scans
+    Then it reads pi's pane, not the active child-viewer pane
+    And it detects the failure and switches the orchestrator to the fallback
+      model in pi's pane
+    And it types the wake into pi's pane only
+    And it never addresses the child-viewer pane
+
+  Scenario: The watcher re-resolves the pi pane when the pinned pane is not pi [REQ-52]
+    Given a "pi-main" session whose pinned window holds no pi pane
+    And another window of the session holds pi's pane showing the free-provider
+      error render
+    When the watcher scans
+    Then it resolves the session's first pi-like pane and follows it
+    And the visible failure is detected and recovered in that pane
+    And it never types into the pinned non-pi pane

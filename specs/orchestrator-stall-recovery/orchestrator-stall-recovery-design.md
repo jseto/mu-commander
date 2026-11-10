@@ -11,10 +11,11 @@ notice is ever acted on again.
 This change adds three things and moves one:
 
 1. [`scripts/main-watch.sh`](file://scripts/main-watch.sh) **(new)** — one
-   single-purpose watcher process for the orchestrator's own session, armed by
+   single-purpose watcher process for the orchestrator's own session, ensured by
    `start-main.sh` in exactly ONE detached extra window named `watch` of that
    session and handed pi's window index (`main-watch.sh <session> <window>`).
-   It scans its session's **pi window** with a **strict** variant of the shared
+   It scans **pi's pane inside that window** (never the window's active pane,
+   which the child-viewer split can own) with a **strict** variant of the shared
    free-provider vocabulary (only pi's own `Error: ` render counts), applies the
    **shared** `sub-fallback.sh` recovery rules (never re-implemented), and types
    exactly one wake line per incident so the interrupted turn resumes.
@@ -31,10 +32,12 @@ This change adds three things and moves one:
    while its argv, stdout, stderr wording and exit codes for children stay
    identical.
 4. [`scripts/start-main.sh`](file://scripts/start-main.sh) **(modified)** —
-   arms the window on the *creation* path only, hands the watcher the pi window
-   index it resolved before arming, honours `START_MAIN_NO_WATCH=1`, warns
-   (never fails) when the window cannot be created, and reports the watcher
-   state. An existing session gains no window (start-main [REQ-6]).
+   ensures exactly one live watcher window on **both** paths: the creation path
+   and an existing session that has none (or whose `watch` window is dead or
+   foreign) gains one, while a live watcher is left alone and the session is
+   never restarted. It hands the watcher the pi window index it resolved, honours
+   `START_MAIN_NO_WATCH=1`, warns (never fails) when the window cannot be
+   created, and reports the watcher state (amended by REQ-2/REQ-50).
 
 `config.json` is untouched and nothing here names a model id or a thinking
 level: the values come from `taskLevels.fallbackModel` /
@@ -43,14 +46,16 @@ them), and the knobs are pure timing/arming.
 
 ## Stated / deduced / assumed
 
-- **Stated** (feature file, 33 scenarios: [REQ-1]…[REQ-27], [REQ-31],
-  [REQ-32], [REQ-33]…[REQ-36] — there is no [REQ-28]…[REQ-30]): one extra
+- **Stated** (feature file, 33 scenarios at the original approval: [REQ-1]…[REQ-27], [REQ-31],
+  [REQ-32], [REQ-33]…[REQ-36] — there is no [REQ-28]…[REQ-30]; the 2026-11-10
+  amendment amends [REQ-2] and adds [REQ-50]…[REQ-52]): one extra
   `watch` window at
-  startup in the session named by `MAIN_SESSION`; strict detection; shared
-  recovery rules; one wake after a confirmed switch; one switch per incident;
-  retry an unconfirmed switch, re-wake only after the rewake interval; config
-  problems only warn; the watcher dies with its session; existing session
-  untouched; child stall service and `sub-fallback.sh` for children unchanged;
+  startup in the session named by `MAIN_SESSION`, and the same watcher ensured
+  on an existing session that has none, without restarting it; strict
+  detection; shared recovery rules; one wake after a confirmed switch; one
+  switch per incident; retry an unconfirmed switch, re-wake only after the
+  rewake interval; config problems only warn; the watcher dies with its
+  session; child stall service and `sub-fallback.sh` for children unchanged;
   shellcheck-clean.
 - **Deduced**: the child-scoped engine (`_sub-watch.sh`) owns a child's lease,
   worktree, PR and branch, so a `main` service there would drag all of that
@@ -79,21 +84,19 @@ watcher); everything below is implementation:
 
 | Function | Role |
 |---|---|
-| `mw_init` | Resolve the session and the optional window argument, pin the *pane/send* target to pi's **verified window** (`=$SESS:<index>`) and build the existence target `=$SESS` (the exact-name forms `sub-report.sh` uses), validate the knob family (and refuse a non-numeric window argument on the usage line), seed state. |
-| `mw_window_exists` | `tmux display-message -p -t "=$SESS:<index>" '#{window_index}'` → the reported index **equals** the requested one. The only proof a pin is real: tmux resolves a missing index — and `=SESS:0` on a base-index-1 server — to the session's *selected* window, and `display-message` succeeds either way. |
-| `mw_set_pin` | Set `MW_TARGET="=$SESS:<index>"` for a verified index; otherwise the documented last resort `="$SESS:"` (session-level). An unverified index is never pinned. |
-| `mw_resolve_window` | `tmux list-windows -t "=$SESS" -F '#{window_index} #{pane_current_command}'` → the first *pi-like* window's index (per `mw_command_is_pi`), else the **first listed** index — never a literal, because index `0` does not exist on a base-index-1 server and a knock-on fallback to it re-creates the blindness. |
-| `mw_pin_target` | The window argument `start-main.sh` armed with, **when it verifies** (`mw_window_exists`); otherwise `mw_set_pin "$(mw_resolve_window)"`. A pinned window cannot follow the operator's selection, unlike `=$SESS:` — which would capture the `watch` window's own pane. |
-| `mw_command_is_pi` | A pane command is pi-like when it is non-empty and **not** on the deny-list `sh\|bash\|zsh\|fish\|dash\|ksh\|tcsh\|csh\|nu\|elvish\|xonsh\|tmux\|screen` (case-insensitive). Deliberately not `== pi`: pi is a launcher symlink on some hosts and a `node`/`bun`-exec'd process on others, where an `== pi` test makes the watcher inert. |
-| `mw_follow_pi_pane` | Re-pin once from `mw_resolve_window` (the same resolver) when the pinned pane is not pi-like, before each scan, so a session that runs pi in another window is followed; `MW_WARNED_NOT_PI` is never touched here, so a session with no pi-like window still warns once per incident, not once per scan. |
+| `mw_init` | Resolve the session and the optional window argument, pin the *pane/send* target to pi's **pane** (a `%N` id) — inside the verified window when the argument proves one, else from the session's pane list — and build the existence target `=$SESS` (the exact-name forms `sub-report.sh` uses), validate the knob family (and refuse a non-numeric window argument on the usage line), seed state. |
+| `mw_window_exists` | `tmux display-message -p -t "=$SESS:<index>" '#{window_index}'` → the reported index **equals** the requested one. The only proof a window index is real: tmux resolves a missing index — and `=SESS:0` on a base-index-1 server — to the session's *selected* window, and `display-message` succeeds either way. |
+| `mw_set_pin` | Set `MW_TARGET` to the pi pane of the verified window, else to the session's first pi-like pane, else the documented last resort `="$SESS:"` (session-level). An unverified index is never used to find the pane. |
+| `mw_pin_target` | The pane of the window argument `start-main.sh` armed with, **when the index verifies** (`mw_window_exists`); otherwise the pane of `pi_window_index`'s window (first holding a pi-like pane, else the first listed — never a literal). A pane id cannot follow the operator's selection or a window's active pane — `=$SESS:` and `=$SESS:<index>` both do (the latter follows the active viewer split). |
+| `mw_follow_pi_pane` | Re-resolve the session's first pi-like pane (`pi_pane_id`) when the pinned pane is not pi-like, before each scan, so a session whose pi pane was replaced, or that runs pi in another window, is followed; `MW_WARNED_NOT_PI` is never touched here, so a session with no pi-like pane still warns once per incident, not once per scan. |
 | `mw_session_alive` | `tmux has-session -t "=$SESS"` (REQ-23). |
-| `mw_pane_is_pi` | `tmux display-message -p -t "$MW_TARGET" '#{pane_current_command}'` → `mw_command_is_pi` — the guard that never types into a shell pane (REQ-10), same kind of probe `lavish_wake_child` uses, widened so a pi that is not literally named `pi` is still recognised. |
+| `mw_pane_is_pi` | `tmux display-message -p -t "$MW_TARGET" '#{pane_current_command}'` → `_sub-common.sh`'s `pane_command_is_pi` — the guard that never types into a shell pane (REQ-10), same kind of probe `lavish_wake_child` uses, widened so a pi that is not literally named `pi` is still recognised. The oracle lives in `_sub-common.sh` (`sh\|bash\|zsh\|fish\|dash\|ksh\|tcsh\|csh\|nu\|elvish\|xonsh\|tmux\|screen` is the deny-list, deliberately not `== pi`), so the spawn's boot verification and this watcher cannot disagree. |
 | `mw_scan_strict` | The strict detector (below): sets `MW_KIND` and `MW_SIG`, or clears them (REQ-3…REQ-7). |
 | `mw_new_epoch` | Monotonic epoch for the wake marker, the `_PR_LAST_EPOCH` / `new_stall_epoch` rule (REQ-15, REQ-32). |
 | `mw_compose_wake` | The one wake line (below) (REQ-17, REQ-31). |
 | `mw_wake` | Verified send of that line to `$MW_TARGET`; 0 only when confirmed. |
 | `mw_recover` | One recovery attempt: resolve `fallbackModel` / `fallbackThinking`, call the shared `free_provider_recover`, translate its outcome code into `MW_STATUS` and the operator messages, and wake iff the outcome is switch-confirmed or already-on. |
-| `mw_tick` | One scan: follow pi's window (re-pin from the resolver when the pinned pane is not pi-like) → detect → reset on a clean pane → due check (below) → `mw_recover` / wake-only. |
+| `mw_tick` | One scan: follow pi's pane (re-resolve it when the pinned pane is not pi-like) → detect → reset on a clean pane → due check (below) → `mw_recover` / wake-only. |
 | `mw_loop` | The single-clock loop: session alive? → scan → `MAIN_WATCH_TICKS` bound → sleep `MAIN_WATCH_INTERVAL`. |
 
 **State** (module globals, mirroring the child services' idiom):
@@ -204,30 +207,34 @@ The loose detect gate, its exact wording, the `FALLBACK_*` knobs and the
 "already on fallback" no-op all stay in the child's own file: the *policy*
 remains per-caller, only the mechanics are shared.
 
-### `scripts/start-main.sh` — arming (creation path only)
+### `scripts/start-main.sh` — ensuring one live watcher (both paths)
 
-After the verified launcher send, on the path where the session was just
-created (an existing session returns through `finish` before this block, so
-REQ-2 and start-main [REQ-6] hold):
+The same `arm_watcher` block runs on the creation path (after the verified
+launcher send) and on the existing-session path (before `finish`), so an
+unwatched session gains a watcher while never being restarted (REQ-2, REQ-50):
 
 ```
-PI_WIN = tmux display-message -p -t "=$SESS:" '#{window_index}'   # before arming:
-                                                                 # the session has
-                                                                 # exactly one window
+WATCH = index of the window named watch, if any
+WATCH live?  (pane_dead=0 and pane_start_command mentions main-watch.sh)
+   yes  -> WATCH_STATE="watch window already in $SESS (…)"; leave it
 START_MAIN_NO_WATCH=1            -> WATCH_STATE="disabled (START_MAIN_NO_WATCH=1)"
-tmux new-window -d -t "=$SESS:" -n watch -c "$ROOT" \
-     "exec <SCRIPT_DIR>/main-watch.sh <SESS> <PI_WIN>"     # window arg omitted if empty
+WATCH exists but is dead/foreign -> tmux kill-window it
+PI_WIN = pi_window_index over the session's panes
+WATCH_CMD = "exec <SCRIPT_DIR>/main-watch.sh <SESS> <PI_WIN>"   # window arg omitted if empty
+tmux new-window -d -t "=$SESS:" -n watch -c "$ROOT" "$WATCH_CMD"
    success                       -> WATCH_STATE="watch window in $SESS (orchestrator stall recovery)"
    failure                       -> WATCH_STATE="unavailable"; warn "… could not be armed … only automatic stall watching is missing"
 ```
 
-- The window index is resolved **before** the `watch` window exists, because at
-  that moment the just-created session has exactly one window — the pi one — so
-  `=SESS:` is unambiguous. It is passed to the watcher, which verifies it
-  before pinning. A literal index cannot substitute: on a base-index-1 server
+- The window index is resolved **before** the `watch` window exists, and from
+  the *panes* (never a window-level active command, which a focused viewer
+  split owns). It is passed to the watcher, which verifies it before using it to
+  find the pane. A literal index cannot substitute: on a base-index-1 server
   (this host sets `base-index 1`) index `0` does not exist and tmux resolves it
   to the session's *selected* window — which becomes the watcher's own window
   the moment the `watch` window is armed, exactly the blindness REQ-3 forbids.
+  On an existing session there may be several windows, so the resolver picks the
+  first one that holds a pi-like pane.
 
 - `-d` is load-bearing: it keeps the pi window current, so the existing suite's
   `show-options -w -v -t "=pi-main:"` / `pane_pid` / `pane_cwd` assertions
@@ -307,7 +314,7 @@ rules:
 ```mermaid
 flowchart LR
   SM["start-main.sh<br/>create path"] -->|"new-window -d -n watch <session> <window>"| MW["main-watch.sh"]
-  SM -.->|"existing session: nothing"| EX["pi-main unchanged<br/>(start-main REQ-6)"]
+  SM -.->|"existing session: ensure one"| EX["pi-main pi pane untouched<br/>watcher ensured (REQ-2/REQ-50)"]
   MW -->|"pane_tail_in / display-message"| P["pi-main pane"]
   MW -->|"free_provider_recover<br/>(shared)"| CM["_sub-common.sh"]
   CM -->|"tmux_send_line /model,/thinking<br/>status-bar probes"| P
@@ -319,15 +326,16 @@ flowchart LR
   CFG[("config.json<br/>taskLevels.fallbackModel<br/>taskLevels.fallbackThinking")] --> CM
 ```
 
-Pin resolution (one table, all paths end in a *verified* window):
+Pin resolution (one table, all paths end at a pane id; the window argument is
+only a hint that must verify):
 
 | Case | Pin |
 |---|---|
-| window argument from `start-main.sh`, verifies | `=$SESS:<arg>` |
-| window argument missing or does not verify | resolve from `list-windows`: first pi-like window, else the first listed index; pin it if it verifies |
-| no pi-like window | the first **listed** index (never a literal, never `0`) |
-| nothing verifies at all | `=$SESS:` — documented last resort; the pi-like guard still blocks typing into a shell |
-| pinned pane stops being pi-like on a later scan | re-resolve from `list-windows`, same rule, `MW_WARNED_NOT_PI` untouched |
+| window argument from `start-main.sh`, verifies | the pi pane of that window (`pi_pane_id_in_window`), else its first pane |
+| window argument missing or does not verify | the session's first pi-like pane (`pi_pane_id`), else its first listed pane |
+| no pi-like pane | the first **listed** pane of the first listed window (never a literal window index, never `0`) |
+| no pane resolves at all | `=$SESS:` — documented last resort; the pi-like guard still blocks typing into a shell |
+| pinned pane stops being pi-like on a later scan | re-resolve the session's first pi-like pane, `MW_WARNED_NOT_PI` untouched |
 
 One scan:
 
@@ -365,22 +373,50 @@ flowchart TD
 3. `main-watch.sh`: knobs, state, window-argument + verified pin, pi-like
    oracle, strict detector, due rule, wake line, loop
    (REQ-1…REQ-24, REQ-31, REQ-32, REQ-33…REQ-36).
-4. `start-main.sh`: resolve pi's window index, arm one detached `watch` window
-   on the creation path passing it, honour `START_MAIN_NO_WATCH`, warn on
-   failure, report the state (REQ-1, REQ-2, REQ-21, REQ-22).
+4. `start-main.sh`: `arm_watcher` on both paths — resolve pi's window index
+   from the panes, create one detached `watch` window (or replace a dead/foreign
+   one), leave a live one alone, honour `START_MAIN_NO_WATCH`, warn on
+   failure, report the state (REQ-1, REQ-2, REQ-21, REQ-22, REQ-50).
 5. `AGENTS.md`: helper-table row for `main-watch.sh` and the watcher sentence
    on the `start-main.sh` row; a new "Orchestrator watcher" subsection (knobs,
-   strict detection, shared recovery, one wake, existing session untouched);
-   `sub-fallback.sh` text notes it still recovers children only (REQ-25,
-   REQ-26).
+   strict detection, shared recovery, one wake, watcher ensured on both paths,
+   pi-pane pinning); `sub-fallback.sh` text notes it still recovers children
+   only (REQ-25, REQ-26).
 6. Verify: `bash -n` + `shellcheck -x -P SCRIPTDIR` on the three touched
    scripts (REQ-27), then every existing suite (below).
+
+## Amendment (2026-11-10): arming on an existing session, and the pi pane
+
+Two live gaps (both observed on 2026-11-10):
+
+1. `start-main.sh` armed the watcher only when it created the session. An
+   existing `pi-main` with no `watch` window stayed unwatched, so a child's
+   notify-only `STUCK:` notice landed in a wedged session. [REQ-2] is amended
+   and [REQ-50] added: `arm_watcher` runs on both paths, creates the window when
+   absent, replaces a dead/foreign `watch` window (the name is reserved), leaves
+   a live watcher untouched, and never restarts the session or its pi pane.
+2. The watcher pinned `=SESS:<index>`, i.e. the window's *active* pane. The
+   orchestrator window also holds `sub-spawn.sh`'s child-viewer split, whose
+   pane runs `tmux`; focusing it made the watcher see a non-pi pane, warn and
+   stop recovering. [REQ-51] pins a pane id (`%N`) found by scanning panes;
+   [REQ-52] re-resolves the session's first pi-like pane when the pinned one is
+   no longer pi (pi replaced, or pi in another window). [REQ-33]/[REQ-34] keep
+   their numbers and narrow from window to pane.
+
+`_sub-common.sh` gains `pi_pane_id`, `pi_pane_id_in_window`, `pi_window_index`
+and `_session_panes` (read-only pane scans), and `pane_tail_in` /
+`pane_last_line_in` accept a pane target as well as a session target — child
+call sites pass sessions unchanged. `config.json` is still untouched and no
+value names a model or level. Tests: `tests/main-watch.test.sh` adds
+REQ-51/REQ-52 with multi-pane fixtures and re-points its target assertions from
+`=pi-main:1` to pane ids; `tests/test-start-main.sh` rewrites REQ-2 and adds
+REQ-50.
 
 ## Proposed changes (files/modules)
 
 | File | Change | Serves |
 |---|---|---|
-| `scripts/main-watch.sh` **(new)** | Single-purpose orchestrator watcher: `mw_init`, `mw_session_alive`, `mw_window_exists`, `mw_set_pin`, `mw_resolve_window`, `mw_pin_target`, `mw_command_is_pi`, `mw_pane_is_pi`, `mw_follow_pi_pane`, `mw_scan_strict`, `mw_new_epoch`, `mw_compose_wake`, `mw_wake`, `mw_recover`, `mw_tick`, `mw_loop`; argv `<session> [window]`; knobs `MAIN_WATCH_INTERVAL` (30), `MAIN_WATCH_RETRY_SECONDS` (30), `MAIN_WATCH_REWAKE_SECONDS` (900), `MAIN_WATCH_SCAN_LINES` (50), `MAIN_WATCH_TICKS` (0 = unbounded) | [REQ-1], [REQ-3]–[REQ-24], [REQ-27], [REQ-31]–[REQ-36] |
+| `scripts/main-watch.sh` **(new)** | Single-purpose orchestrator watcher: `mw_init`, `mw_session_alive`, `mw_window_exists`, `mw_set_pin`, `mw_pin_target`, `mw_pane_is_pi`, `mw_follow_pi_pane`, `mw_scan_strict`, `mw_new_epoch`, `mw_compose_wake`, `mw_wake`, `mw_recover`, `mw_tick`, `mw_loop`; argv `<session> [window]`; knobs `MAIN_WATCH_INTERVAL` (30), `MAIN_WATCH_RETRY_SECONDS` (30), `MAIN_WATCH_REWAKE_SECONDS` (900), `MAIN_WATCH_SCAN_LINES` (50), `MAIN_WATCH_TICKS` (0 = unbounded) | [REQ-1], [REQ-3]–[REQ-24], [REQ-27], [REQ-31]–[REQ-36], [REQ-51], [REQ-52] |
 | `scripts/_sub-common.sh` **(modified)** | `pane_tail_in`, `pane_last_line_in`, `pane_has_free_limit_error_in`, `pane_thinking_level_rejected_in`, `pane_shows_model_in`, `pane_shows_thinking_in` + the two wrappers with live child callers; `clear_composer`, `confirm_model_in`, `confirm_thinking_in`, `free_provider_recover`, `free_provider_failure_message` | [REQ-3], [REQ-6], [REQ-8], [REQ-11]–[REQ-14], [REQ-16], [REQ-20], [REQ-25], [REQ-26], [REQ-27] |
 | `scripts/sub-fallback.sh` **(modified)** | Delegates the switch/confirm/thinking block to `free_provider_recover`; keeps its session gate, loose detect gate, `FALLBACK_*` knobs, messages and exit codes | [REQ-26] |
 | `scripts/start-main.sh` **(modified)** | Resolve pi's window index before arming, one detached `watch` window on the creation path passed `<session> <window>`, `START_MAIN_NO_WATCH=1`, warn-not-fail on a refused window, watcher state in the output; existing session untouched | [REQ-1], [REQ-2], [REQ-21], [REQ-22], [REQ-27] |

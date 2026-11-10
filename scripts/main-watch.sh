@@ -14,21 +14,27 @@
 # trigger a recovery — the watcher never mistakes its own notification traffic
 # for an incident.
 #
-# The watched pane is pinned to pi's WINDOW, never to the session's current
-# window: `=SESS:` follows whatever window the operator has selected, so a
-# session whose `watch` window is selected would have the watcher capture its
-# own pane — blind to the very incidents it exists to catch, and its own quiet
-# pane would keep the not-pi warning from ever clearing. `=SESS:<index>` cannot
-# follow a selection — but only a VERIFIED index helps: tmux resolves a missing
-# index (and `=SESS:0` on a base-index-1 server) to the session's selected
-# window, so a guessed literal re-creates the blindness it was meant to remove.
-# start-main.sh therefore resolves pi's window index before it arms this
-# watcher and passes it as the second argument; a pin is used only when
-# `#{window_index}` proves the index exists. Without a usable argument the
-# index comes from the session's own window list — the first pi-like window,
-# else the first listed one, never a literal — and is verified the same way.
-# It is re-resolved from that list whenever the pinned pane is not pi-like, so
-# a session that runs pi in another window is still followed.
+# The watched target is pinned to pi's PANE inside pi's window, never to the
+# window or the session's current window: `=SESS:` follows whatever window the
+# operator has selected (a session whose `watch` window is selected would have
+# the watcher capture its own pane), and `=SESS:<index>` resolves to that
+# window's ACTIVE pane — which is the child-viewer pane whenever the operator
+# focuses a child. Either form is blind exactly when the orchestrator needs
+# watching. A pane id cannot move under a focus or selection change, and
+# _sub-common.sh finds the pi pane by scanning panes (a window can hold the pi
+# pane and the viewer split).
+#
+# `=SESS:<index>` is still how a window is named, so the index
+# start-main.sh resolved before arming is used to find the pane inside it — but
+# only a VERIFIED index helps: tmux resolves a missing index (and `=SESS:0` on
+# a base-index-1 server) to the session's selected window, so a guessed literal
+# re-creates the blindness it was meant to remove. start-main.sh therefore
+# resolves pi's window index before it arms this watcher and passes it as the
+# second argument; a pin from it is used only when it verifies. Without a
+# usable argument the pane comes from the session's own pane list — the first
+# pi-like pane, else the first listed pane — never a literal. It is re-resolved
+# from that list whenever the pinned pane is not pi-like, so a session whose pi
+# pane was replaced (or that runs pi in another window) is still followed.
 #
 # A pane is pi-like when its `#{pane_current_command}` is non-empty and is not a
 # shell or another interactive non-TUI program: pi is a launcher symlink on
@@ -145,74 +151,54 @@ mw_window_exists() { # [$1=window index]
   [ "$got" = "$1" ]
 }
 
-# Set the pane target to the verified window $1, or to the session-level target
-# when that index does not verify. The session target is the documented last
-# resort (no index could be proven to exist); an unverified index is never
-# pinned, because it silently means "whatever window is selected".
+# Set the pane target from the verified window $1: the pi pane inside it, or
+# — when that window cannot be verified — the session's first pi-like pane.
+# The session-level `=SESS:` form stays the documented last resort (no pane
+# could be resolved), and the pi-like guard still blocks typing into a shell.
 mw_set_pin() { # [$1=window index]
+  local pane=''
   if mw_window_exists "${1:-}"; then
-    MW_TARGET="=$MW_SESS:$1"
-  else
-    MW_TARGET="$MW_SESSION_TARGET:"
+    pane=$(pi_pane_id_in_window "$MW_SESSION_TARGET" "$1")
   fi
+  [ -n "$pane" ] || pane=$(pi_pane_id "$MW_SESSION_TARGET")
+  MW_TARGET=${pane:-"$MW_SESSION_TARGET:"}
 }
 
-# Echo the window index to pin from the session's own window list: the first
-# pi-like window, else the first listed one (never a literal — on a base-index-1
-# server index 0 does not exist). Empty when the session lists no window.
-mw_resolve_window() {
-  local raw idx cmd first='' best=''
-  raw=$(tmux list-windows -t "$MW_SESSION_TARGET" \
-          -F '#{window_index} #{pane_current_command}' 2>/dev/null || true)
-  while read -r idx cmd; do
-    [ -n "$idx" ] || continue
-    if [ -z "$first" ]; then first=$idx; fi
-    if [ -z "$best" ] && mw_command_is_pi "$cmd"; then best=$idx; fi
-  done <<<"$raw"
-  printf '%s' "${best:-$first}"
-}
-
-# Pin the pane target to pi's *window*: `=SESS:` tracks the session's current
-# window, which an operator selecting the `watch` window moves onto this script
-# itself. The pinned form cannot move under a selection. The window index from
-# start-main.sh is preferred, but only while it verifies; otherwise it is
-# resolved from the live window list. Neither path may pin an unverified index.
+# Pin the pane target to pi's *pane*: `=SESS:` tracks the session's current
+# window, whose active pane an operator focusing a child moves onto the viewer
+# split, and `=SESS:<index>` would still follow that window's active pane. The
+# pane id cannot move under a selection. The window index from start-main.sh is
+# preferred while it verifies; otherwise the window — and the pane in it — are
+# resolved from the live session. Neither path may pin an unverified index.
 mw_pin_target() {
   if mw_window_exists "$MW_WINDOW"; then
     mw_set_pin "$MW_WINDOW"
     return 0
   fi
-  mw_set_pin "$(mw_resolve_window)"
+  mw_set_pin "$(pi_window_index "$MW_SESSION_TARGET")"
 }
 
 # True while the watched session exists. The watcher stops with it.
 mw_session_alive() { tmux has-session -t "$MW_SESSION_TARGET" 2>/dev/null; }
 
-# Shells and other interactive non-TUI programs a pane may run instead of pi.
-# A deny-list, not `== pi`: pi is a launcher symlink on some hosts and a
-# node/bun-exec'd process on others, where `pane_current_command` is `node`.
-# The rule itself lives in _sub-common.sh (pane_command_is_pi) so the spawn's
-# boot verification and this watcher can never disagree about what pi is.
-mw_command_is_pi() { # $1=pane_current_command
-  pane_command_is_pi "${1:-}"
-}
-
-# True when the pinned window's pane is pi-like (the probe lavish_wake_child
-# uses, widened for the installs where pi is not literally `pi`). A pane running
-# a shell is never typed into — the watcher keeps watching instead of exiting,
+# True when the pinned pane is pi-like (the probe lavish_wake_child uses,
+# widened for the installs where pi is not literally `pi`). A pane running a
+# shell is never typed into — the watcher keeps watching instead of exiting,
 # because pi may still come back.
 mw_pane_is_pi() {
   pane_command_is_pi "$(pane_command_in "$MW_TARGET")"
 }
 
-# Re-pin from the same resolver once and report whether that pane is pi-like.
-# Called before each scan, so a session that runs pi in another window is
-# followed rather than watched through a stale pin. MW_WARNED_NOT_PI is never
-# touched here: a re-pin that finds no pi-like window must not turn into one
-# warning per scan.
+# Re-resolve from the session once and report whether that pane is pi-like.
+# Called before each scan, so a session whose pi pane was replaced (or that
+# runs pi in another window) is followed rather than watched through a stale
+# pin. MW_WARNED_NOT_PI is never touched here: a re-pin that finds no pi-like
+# pane must not turn into one warning per scan.
 mw_follow_pi_pane() {
   mw_pane_is_pi && return 0
-  mw_set_pin "$(mw_resolve_window)"
+  local pane
+  pane=$(pi_pane_id "$MW_SESSION_TARGET")
+  [ -n "$pane" ] && MW_TARGET=$pane
   mw_pane_is_pi
 }
 

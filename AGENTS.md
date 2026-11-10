@@ -268,8 +268,8 @@ SCRIPTS=/home/jseto/programming-projects/mu-commander/scripts
 | `sub-retire.sh <task> [repo] [--force] [--keep-files] [--no-branch-cleanup]` | Kill `pi-<task>`, return a leased worktree, delete the task's scratch brief/report/patch, best-effort clean up merged local/remote branches (`--no-branch-cleanup` skips that), and log retirement with the child's session cost; refuses when work may be lost (overridable with `--force`; if the lease is missing, `--force` stops the child but skips worktree return and branch cleanup; `--keep-files` retains scratch docs) |
 | `sub-clean.sh [repo] [--yes]` | Sweep scratch docs for tasks with no lease and no running tmux session (dry-run unless `--yes`) |
 | `conversation-log.sh append <kind> <message>` | Append one entry to the weekly conversation/operation log in gitignored `logs/conversations/` (6-month retention sweep runs on every call; **logs are only read to resolve operational issues** — never during normal operation); kinds: `prompt`, `reply`, `child-out`, `child-in`, `operation` — see *Conversation logging* |
-| `start-main.sh [--detach\|-d]` | Start the orchestrator's main pi session in tmux `pi-main` (name follows `$MAIN_SESSION`): create it detached at the main checkout of this repo, launch plain `$PI_BIN` (default `pi`, no child flags, submission verified via `tmux_send_line`), set the `main-pane-width 50%` / `main-vertical` convention, arm one `watch` window (`START_MAIN_NO_WATCH=1` opts out) running the orchestrator watcher, then attach — `--detach`/`-d` only starts or points at it; an existing session is reported (name + cwd) and re-attached, never restarted |
-| `main-watch.sh [session]` | The orchestrator's own stall recovery (name follows `$MAIN_SESSION`), armed by `start-main.sh` in that one detached `watch` window: scans the session's pane for pi's *rendered* free-provider error only, applies the same recovery rules as `sub-fallback.sh`, types exactly one wake line per incident so the interrupted turn resumes, retries an unconfirmed switch, warns (never exits) on config problems, and stops when the session goes away — see *Orchestrator watcher* |
+| `start-main.sh [--detach\|-d]` | Start the orchestrator's main pi session in tmux `pi-main` (name follows `$MAIN_SESSION`): create it detached at the main checkout of this repo, launch plain `$PI_BIN` (default `pi`, no child flags, submission verified via `tmux_send_line`), set the `main-pane-width 50%` / `main-vertical` convention, ensure one live `watch` window (`START_MAIN_NO_WATCH=1` opts out) running the orchestrator watcher on both the creation and the existing-session path, then attach — `--detach`/`-d` only starts or points at it; an existing session is reported (name + cwd) and re-attached, never restarted |
+| `main-watch.sh [session]` | The orchestrator's own stall recovery (name follows `$MAIN_SESSION`), armed by `start-main.sh` in that one detached `watch` window: scans pi's *pane* inside the session (not the window's active viewer pane) for pi's *rendered* free-provider error only, applies the same recovery rules as `sub-fallback.sh`, types exactly one wake line per incident so the interrupted turn resumes, retries an unconfirmed switch, warns (never exits) on config problems, and stops when the session goes away — see *Orchestrator watcher* |
 | `worktree-setup.sh` | treehouse `post_create` hook: installs dependencies in each new worktree (lockfile-aware; see *Init scripts* below) |
 
 Details:
@@ -501,14 +501,26 @@ names warn and are ignored, an empty selection exits without watching).
 A free-provider failure in the orchestrator wedges the whole pattern: the
 main session stops answering, the children keep working, and no child notice
 is ever acted on again. Nothing watched it — the child watcher is notify-only
-and `sub-fallback.sh` recovers a *child*. So `start-main.sh` arms ONE watcher
-in a detached `watch` window of the session it just created (`MAIN_SESSION`,
+and `sub-fallback.sh` recovers a *child*. So `start-main.sh` ensures ONE live
+watcher in a detached `watch` window of the session (`MAIN_SESSION`,
 canonically `pi-main`), running `scripts/main-watch.sh <session>`;
-`START_MAIN_NO_WATCH=1` opts out. It is armed **only** on the creation path:
-an existing session gains no window and is never restarted (the start-main
-contract), a window that cannot be armed only warns, and the watcher dies
-with the session it watches (reporting that the watched session is not
-running).
+`START_MAIN_NO_WATCH=1` opts out. It is ensured on **both** paths: a freshly
+created session gets one, and an existing session without a live watcher (no
+`watch` window, or one whose pane is dead or is not this watcher — the name is
+reserved for it) gains or recovers exactly one without restarting the session,
+its pi pane, or its window options; a live watcher is left alone, so repeated
+runs never duplicate it. A window that cannot be armed only warns, and the
+watcher dies with the session it watches (reporting that the watched session
+is not running).
+
+- **Pinned to pi's pane, not the window's active pane.** The watcher finds the
+  first pi-like pane in pi's window (else in the session) and reads/types only
+  there, re-resolving from the live pane list whenever the pinned pane stops
+  being pi-like. A window-level pin would follow the window's *active* pane —
+  and the orchestrator window also holds the child-viewer split, whose pane
+  runs `tmux`; while the operator watches a child, that pin would see a non-pi
+  pane and stop recovering. A pane that is not running pi is still never typed
+  into.
 
 - **Strict detection.** pi's own error render only: a pane line whose trimmed
   text starts with `Error: `, matched on that line or on its wrapped

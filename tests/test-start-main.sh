@@ -354,24 +354,61 @@ orch_req_1() {
 }
 
 orch_req_2() {
-  begin "[REQ-2] An existing main session gains no watcher and is not restarted"
+  begin "[REQ-2] An existing main session gains a watcher when it has none, and is not restarted"
   fresh_session
   # A session that predates this feature: no watcher window.
   tux new-session -d -s pi-main -c "$TMP" "sleep 60"
   if has_main; then ok "setup: an unwatched session exists"; else bad "setup: could not create the session"; fi
-  local pid_before wins_before cwd_before
+  local pid_before cwd_before watch_pid
   pid_before=$(pane_pid)
-  wins_before=$(window_names)
   cwd_before=$(pane_cwd)
   t_eq "setup: one window only" 1 "$(window_count)"
   PI_VAL="$TESTBIN/fake-pi"
   run_start --detach
   t_eq "exits 0" 0 "$RC"
-  t_eq "the window list is unchanged" "$wins_before" "$(window_names)"
-  t_eq "no watcher window is added" 0 "$(watch_windows)"
-  t_eq "the pane process was not restarted" "$pid_before" "$(pane_pid)"
+  t_eq "exactly one watcher window is added" 2 "$(window_count)"
+  t_eq "exactly one window is named watch" 1 "$(watch_windows)"
+  t_eq "the pi pane process was not restarted" "$pid_before" "$(pane_pid)"
   t_has "reports the session name" "pi-main" "$OUT"
   t_has "reports its working directory" "$cwd_before" "$OUT"
+  t_has "reports the watcher was armed" "watcher: watch window in pi-main" "$OUT"
+
+  # A second run must not duplicate or restart the live watcher.
+  watch_pid=$(tux display-message -p -t "=pi-main:watch" '#{pane_pid}' 2>/dev/null)
+  t_nz_rc "setup: the watcher pane has a pid" "${#watch_pid}"
+  run_start --detach
+  t_eq "exits 0 on the already-watched session" 0 "$RC"
+  t_eq "no second watcher window is added" 2 "$(window_count)"
+  t_eq "still exactly one window named watch" 1 "$(watch_windows)"
+  t_eq "the existing watcher was not restarted" "$watch_pid" \
+    "$(tux display-message -p -t "=pi-main:watch" '#{pane_pid}' 2>/dev/null)"
+  t_has "reports the watcher already armed" "watcher: watch window already in pi-main" "$OUT"
+}
+
+orch_req_50() {
+  begin "[REQ-50] A dead or foreign watch window is replaced with a live watcher"
+  fresh_session
+  tux new-session -d -s pi-main -c "$TMP" "sleep 60"
+  # A `watch` window that is not this watcher (a dead one is destroyed by tmux
+  # and the window is simply absent; a leftover one is this case).
+  tux new-window -d -t "=pi-main:" -n watch -c "$TMP" "sleep 60"
+  local pid_before old_watch_pid new_watch_pid
+  pid_before=$(pane_pid)
+  old_watch_pid=$(tux display-message -p -t "=pi-main:watch" '#{pane_pid}' 2>/dev/null)
+  t_eq "setup: pi window plus a foreign watch window" 2 "$(window_count)"
+  PI_VAL="$TESTBIN/fake-pi"
+  run_start --detach
+  t_eq "exits 0" 0 "$RC"
+  t_eq "still exactly two windows" 2 "$(window_count)"
+  t_eq "still exactly one window named watch" 1 "$(watch_windows)"
+  new_watch_pid=$(tux display-message -p -t "=pi-main:watch" '#{pane_pid}' 2>/dev/null)
+  if [ -n "$new_watch_pid" ] && [ "$new_watch_pid" != "$old_watch_pid" ]
+  then ok "the foreign watch pane was replaced"
+  else bad "the foreign watch pane was not replaced"
+  fi
+  printf '%s' "$(watch_start_command)" > "$TMP/watch-start.txt"
+  t_has "the new watch window runs the orchestrator watcher" "main-watch.sh" "$TMP/watch-start.txt"
+  t_eq "the pi pane process was not restarted" "$pid_before" "$(pane_pid)"
 }
 
 orch_req_21() {
@@ -427,6 +464,7 @@ main() {
   req_9
   orch_req_1
   orch_req_2
+  orch_req_50
   orch_req_21
   orch_req_22
 
