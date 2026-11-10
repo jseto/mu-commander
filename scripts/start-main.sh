@@ -56,12 +56,72 @@ finish() {
   exit 0
 }
 
+# --- orchestrator watcher arming (specs/orchestrator-stall-recovery) --------
+# Exactly ONE `watch` window running main-watch.sh for this session, so a
+# free-provider failure in the orchestrator itself is recovered instead of
+# wedging the whole pattern. It is ensured on BOTH paths: a freshly created
+# session gets one, and an existing session that has none (or whose watcher
+# window died) gains or recovers one — without ever restarting the session, its
+# pi pane, or its window options. A live watcher is left alone, so repeated
+# runs never duplicate it. -d is load-bearing: it keeps the pi window current.
+# Best effort, like the child watcher: a window that cannot be created warns and
+# never fails start-main.
+WATCH_STATE="unavailable"
+
+# Echo the index of the session's window named `watch`, if any.
+watcher_window_index() {
+  tmux list-windows -t "=$SESS:" -F '#{window_index} #{window_name}' 2>/dev/null \
+    | awk '$2 == "watch" { print $1; exit }'
+}
+
+# True when window $1 is a live orchestrator watcher: its pane is not dead and
+# it was started with this repo's main-watch.sh. A window that merely shares
+# the reserved name is not a watcher.
+watcher_alive() { # $1=window index
+  local dead start
+  read -r dead start < <(tmux list-panes -t "=$SESS:$1" \
+    -F '#{pane_dead} #{pane_start_command}' 2>/dev/null || true)
+  [ "${dead:-1}" = 0 ] && [[ ${start:-} == *main-watch.sh* ]]
+}
+
+# Ensure exactly one live watcher window: create it when absent, replace a
+# dead or foreign `watch` window, leave a live one untouched.
+arm_watcher() {
+  local idx
+  if [ "${START_MAIN_NO_WATCH:-0}" = 1 ]; then
+    WATCH_STATE="disabled (START_MAIN_NO_WATCH=1)"
+    return 0
+  fi
+  idx=$(watcher_window_index)
+  if [ -n "$idx" ] && watcher_alive "$idx"; then
+    WATCH_STATE="watch window already in $SESS (orchestrator stall recovery)"
+    return 0
+  fi
+  if [ -n "$idx" ]; then
+    tmux kill-window -t "=$SESS:$idx" >/dev/null 2>&1 || true
+  fi
+  # The watcher gets pi's window index, resolved here before the watch window
+  # exists (or from the live pane list on an existing session). A literal
+  # index would be worse than useless: on a base-index-1 server index 0 does
+  # not exist, and tmux resolves a missing index to the SELECTED window, which
+  # becomes the watcher's own window the moment it is armed.
+  PI_WINDOW_INDEX=$(pi_window_index "=$SESS:")
+  WATCH_CMD="exec $(printf '%q' "$SCRIPT_DIR/main-watch.sh") $(printf '%q' "$SESS")"
+  if [ -n "$PI_WINDOW_INDEX" ]; then WATCH_CMD+=" $(printf '%q' "$PI_WINDOW_INDEX")"; fi
+  if tmux new-window -d -t "=$SESS:" -n watch -c "$ROOT" "$WATCH_CMD" >/dev/null 2>&1; then
+    WATCH_STATE="watch window in $SESS (orchestrator stall recovery)"
+  else
+    warn "could not arm the orchestrator watcher window in $SESS — only automatic stall watching is missing"
+  fi
+}
+
 if tmux has-session -t "=$SESS" 2>/dev/null; then
   WHERE=$(tmux display-message -p -t "=$SESS:" '#{pane_current_path}' 2>/dev/null || true)
+  arm_watcher
   if [ "$DETACH" = 1 ]; then
-    info "tmux session $SESS already exists (cwd: ${WHERE:-unknown}); leaving it running (--detach)"
+    info "tmux session $SESS already exists (cwd: ${WHERE:-unknown}); leaving it running (--detach); watcher: $WATCH_STATE"
   else
-    info "tmux session $SESS already exists (cwd: ${WHERE:-unknown}); attaching without restarting it"
+    info "tmux session $SESS already exists (cwd: ${WHERE:-unknown}); attaching without restarting it; watcher: $WATCH_STATE"
   fi
   finish
 fi
@@ -86,34 +146,7 @@ sleep 0.5
 printf -v LAUNCH '%q' "$PI_BIN"
 tmux_send_shell_line "$SESS" "$LAUNCH"
 
-# Arm the orchestrator watcher (specs/orchestrator-stall-recovery): exactly ONE
-# extra window running main-watch.sh for this session, so a free-provider
-# failure in the orchestrator itself is recovered instead of wedging the whole
-# pattern. Armed on the creation path only — an existing session returned
-# through finish() above, so it gains no window and is never restarted. -d is
-# load-bearing: it keeps the pi window current, so the pi window stays the one
-# the layout above (and every pane lookup) addresses. Best effort, like the child
-# watcher: a window that cannot be created warns and never fails start-main.
-#
-# The watcher gets pi's window index: resolved HERE, before the watch window
-# exists, because the freshly created session has exactly one window — the pi
-# one — so `=SESS:` is unambiguous right now. A literal index would be worse
-# than useless: on a base-index-1 server index 0 does not exist, and tmux
-# resolves a missing index to the session's SELECTED window, which becomes the
-# watcher's own window the moment it is armed.
-WATCH_STATE="unavailable"
-PI_WINDOW_INDEX=$(tmux display-message -p -t "=$SESS:" '#{window_index}' 2>/dev/null || true)
-if [ "${START_MAIN_NO_WATCH:-0}" = 1 ]; then
-  WATCH_STATE="disabled (START_MAIN_NO_WATCH=1)"
-else
-  WATCH_CMD="exec $(printf '%q' "$SCRIPT_DIR/main-watch.sh") $(printf '%q' "$SESS")"
-  if [ -n "$PI_WINDOW_INDEX" ]; then WATCH_CMD+=" $(printf '%q' "$PI_WINDOW_INDEX")"; fi
-  if tmux new-window -d -t "=$SESS:" -n watch -c "$ROOT" "$WATCH_CMD" >/dev/null 2>&1; then
-    WATCH_STATE="watch window in $SESS (orchestrator stall recovery)"
-  else
-    warn "could not arm the orchestrator watcher window in $SESS — only automatic stall watching is missing"
-  fi
-fi
+arm_watcher
 
 if [ "$DETACH" = 1 ]; then
   info "started detached tmux session $SESS (rooted at $ROOT, pi: $PI_BIN); watcher: $WATCH_STATE; attach with: tmux attach -t $SESS"

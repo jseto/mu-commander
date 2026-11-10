@@ -1007,17 +1007,20 @@ tmux_send_shell_line() { # $1=tmux target $2=text [attempts] [settle seconds]
 # addressing a child uses the `_in` form instead of inventing a task name.
 # ---------------------------------------------------------------------------
 
-# Tail of a session's pane (trailing blank lines dropped), or a note when it
-# isn't running.
-pane_tail_in() { # $1=session $2=lines
+# Tail of a session's or pane's output (trailing blank lines dropped), or a
+# note when it isn't running. A target may be a session (`pi-<task>`, a child)
+# or a pane id (`%N`, the orchestrator watcher's pin): `has-session` only
+# answers for the former, so a pane-id target is proven with the pane probe.
+pane_tail_in() { # $1=session-or-pane target $2=lines
   local sess=$1
-  if tmux has-session -t "$sess" 2>/dev/null; then
+  if tmux has-session -t "$sess" 2>/dev/null \
+     || tmux display-message -p -t "$sess" '#{pane_id}' >/dev/null 2>&1; then
     tmux capture-pane -t "$sess" -p | awk -v n="$2" '
       { if ($0 ~ /[^[:space:]]/) last=NR; line[NR]=$0 }
       END { start=last-n+1; if (start<1) start=1
             for (i=start; i<=last; i++) print line[i] }'
   else
-    info "(tmux session $sess is not running)"
+    info "(tmux target $sess is not running)"
   fi
 }
 
@@ -1041,6 +1044,54 @@ pane_command_is_pi() { # $1=pane_current_command
   local cmd=${1,,}
   [ -n "$cmd" ] || return 1
   [[ ! $cmd =~ $_PANE_NOT_PI_RE ]]
+}
+
+# Every pane of a session, one per line, in window/pane order:
+#   "<window_index> <pane_index> <pane_id> <pane_current_command>"
+# Read-only, and empty when tmux cannot list them.
+_session_panes() { # $1=tmux session target
+  tmux list-panes -s -t "$1" \
+    -F '#{window_index} #{pane_index} #{pane_id} #{pane_current_command}' 2>/dev/null || true
+}
+
+# Echo the pane id of the session's first pi-like pane, else that of its first
+# listed pane; empty when the session has no pane. A window can hold more than
+# one pane (the orchestrator window carries the child-viewer split), and tmux's
+# window-level probes report only the ACTIVE pane — so the pi pane must be found
+# by scanning panes, never by asking the window what it runs.
+pi_pane_id() { # $1=tmux session target
+  local widx _pidx pid cmd first='' best=''
+  while read -r widx _pidx pid cmd; do
+    [ -n "$pid" ] || continue
+    if [ -z "$first" ]; then first=$pid; fi
+    if [ -z "$best" ] && pane_command_is_pi "$cmd"; then best=$pid; fi
+  done <<<"$(_session_panes "$1")"
+  printf '%s' "${best:-$first}"
+}
+
+# Echo the pane id of window $2's first pi-like pane, else that of its first
+# listed pane; empty when the window has no pane.
+pi_pane_id_in_window() { # $1=tmux session target $2=window index
+  local widx _pidx pid cmd first='' best=''
+  while read -r widx _pidx pid cmd; do
+    [ -n "$pid" ] || continue
+    [ "$widx" = "$2" ] || continue
+    if [ -z "$first" ]; then first=$pid; fi
+    if [ -z "$best" ] && pane_command_is_pi "$cmd"; then best=$pid; fi
+  done <<<"$(_session_panes "$1")"
+  printf '%s' "${best:-$first}"
+}
+
+# Echo the index of the session's first window that holds a pi-like pane, else
+# that of its first listed window; empty when the session has no pane.
+pi_window_index() { # $1=tmux session target
+  local widx _pidx pid cmd first='' best=''
+  while read -r widx _pidx pid cmd; do
+    [ -n "$pid" ] || continue
+    if [ -z "$first" ]; then first=$widx; fi
+    if [ -z "$best" ] && pane_command_is_pi "$cmd"; then best=$widx; fi
+  done <<<"$(_session_panes "$1")"
+  printf '%s' "${best:-$first}"
 }
 
 # Wait for a session's pane to be running pi. Returns 0 as soon as it is, 1
@@ -1093,9 +1144,11 @@ pane_thinking_level_rejected_in() { # $1=session [$2=scan lines]
 # Echo the last non-empty line currently shown in a session's pane — pi draws
 # its status bar (path, token stats, model • thinking) there. Nothing when the
 # session is not running.
-pane_last_line_in() { # $1=session
+pane_last_line_in() { # $1=session-or-pane target
   local sess=$1
-  tmux has-session -t "$sess" 2>/dev/null || return 0
+  tmux has-session -t "$sess" 2>/dev/null \
+    || tmux display-message -p -t "$sess" '#{pane_id}' >/dev/null 2>&1 \
+    || return 0
   tmux capture-pane -t "$sess" -p 2>/dev/null \
     | awk 'NF { last=$0 } END { if (last != "") print last }'
 }

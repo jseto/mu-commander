@@ -2,8 +2,8 @@
 # Behavioural tests for scripts/main-watch.sh — the orchestrator stall watcher
 # (specs/orchestrator-stall-recovery). One test per scenario the watcher owns:
 # REQ-3 … REQ-20, REQ-23, REQ-24, REQ-31, REQ-32, REQ-33, REQ-34, REQ-35,
-# REQ-36. The
-# arming scenarios (REQ-1, REQ-2, REQ-21, REQ-22) and the shellcheck gate
+# REQ-36, REQ-51, REQ-52. The
+# arming scenarios (REQ-1, REQ-2, REQ-21, REQ-22, REQ-50) and the shellcheck gate
 # (REQ-27) live in tests/test-start-main.sh, because they are start-main.sh's
 # behaviour.
 #
@@ -34,6 +34,10 @@ BASE_PATH=$PATH
 
 SESS=pi-main
 CHILD=pi-demo-task
+# The pane ids this fake tmux synthesizes for the pi window's pane 0 and for a
+# second (viewer) pane of the same window: "%<window_index><pane_index>".
+PI_PANE='%10'
+VIEWER_PANE='%11'
 FB_MODEL=fixture-runner/recovery-alpha
 FB_FOOTER='(fixture-runner) recovery-alpha'
 
@@ -140,21 +144,73 @@ pane_cmd() {
   elif mode pane-bash; then printf 'bash'
   else printf 'pi'; fi
 }
-win_cmd() { # $1 = window index
+win_cmd() { # $1 = window index — tmux reports the ACTIVE pane's command
   [ -n "$(win_name "$1")" ] || return 0
-  if [ "$(win_name "$1")" = pi ]; then pane_cmd
-  else printf 'bash'; fi
+  local pid; pid=$(active_pane_id "$1")
+  [ -n "$pid" ] && pane_cmd_of_pane "$pid"
 }
-# Resolve a -t target the way tmux does: a missing index — including 0 on a
-# base-index-1 server — resolves to the session's SELECTED window, which is
-# exactly why an unverified index is never a usable pin. The raw target is
-# recorded so a test can assert what the watcher addressed.
-resolve() {
-  local t=${1#=} idx=''
+# Panes of the session: "<window_index> <pane_index> <pane_id> <command>".
+# When $S/panes is absent, every window has one pane (index 0, id %<w>0), so a
+# single-pane fixture keeps its old shape; a test that needs the orchestrator's
+# viewer split writes multi-pane lines explicitly. $S/active-panes maps a
+# window to its focused pane index (default 0) — the pane a window-level tmux
+# target resolves to.
+panes() {
+  if [ -f "$S/panes" ]; then cat "$S/panes"; return; fi
+  local idx name cmd
+  while read -r idx name; do
+    [ -n "$idx" ] || continue
+    if [ "$name" = pi ]; then cmd=$(pane_cmd); else cmd=bash; fi
+    printf '%s 0 %%%s0 %s\n' "$idx" "$idx" "$cmd"
+  done < "$S/windows"
+}
+active_pane_idx() { # $1 = window index
+  local p=''
+  [ -f "$S/active-panes" ] && p=$(awk -v w="$1" '$1 == w { print $2; exit }' "$S/active-panes")
+  printf '%s' "${p:-0}"
+}
+pane_line_at() { panes | awk -v w="$1" -v p="$2" '$1 == w && $2 == p { print; exit }'; }
+pane_line_for_id() { panes | awk -v id="$1" '$3 == id { print; exit }'; }
+pane_cmd_of_pane() { pane_line_for_id "$1" | awk '{ print $4 }'; }
+win_of_pane() { pane_line_for_id "$1" | awk '{ print $1 }'; }
+active_pane_id() { pane_line_at "$1" "$(active_pane_idx "$1")" | awk '{ print $3 }'; }
+# Resolve a -t target to a window index the way tmux does: a pane id names its
+# own window; a missing window index — including 0 on a base-index-1 server —
+# resolves to the session's SELECTED window, which is exactly why an unverified
+# index is never a usable pin. The raw target is recorded so a test can assert
+# what the watcher addressed.
+resolve_window() {
+  local t=${1#=} part win=''
   printf '%s\n' "${1:-}" >> "$S/targets"
-  case $t in *:*) idx=${t#*:} ;; esac
-  if [ -n "$idx" ] && win_exists "$idx"; then printf '%s' "$idx"
+  case $t in
+    %*) win=$(win_of_pane "$t"); [ -n "$win" ] && { printf '%s' "$win"; return; } ;;
+  esac
+  case $t in *:*) part=${t#*:} ;; *) part='' ;; esac
+  win=${part%%.*}
+  if [ -n "$win" ] && win_exists "$win"; then printf '%s' "$win"
   else sel_index; fi
+}
+# Resolve a -t target to a pane id: a pane id is itself, `=S:win.pane` names a
+# pane of a window, and anything else resolves to the window's ACTIVE pane (the
+# behaviour the viewer-focus bug relied on).
+resolve_pane() {
+  local t=${1#=} part win pidx pid
+  printf '%s\n' "${1:-}" >> "$S/targets"
+  case $t in
+    %*) if [ -n "$(pane_line_for_id "$t")" ]; then printf '%s' "$t"; return; fi ;;
+  esac
+  case $t in *:*) part=${t#*:} ;; *) part='' ;; esac
+  win=${part%%.*}
+  pidx=''
+  case $part in *.*) pidx=${part#*.} ;; esac
+  if [ -z "$win" ] || ! win_exists "$win"; then win=$(sel_index); pidx=''; fi
+  if [ -n "$pidx" ]; then
+    pid=$(pane_line_at "$win" "$pidx" | awk '{ print $3 }')
+  else
+    pid=$(active_pane_id "$win")
+  fi
+  [ -n "$pid" ] || pid=$(panes | awk 'NR == 1 { print $3 }')
+  printf '%s' "$pid"
 }
 
 printf '%s\n' "${1:-}" >> "$S/calls"
@@ -240,7 +296,7 @@ capture_pane() {
 }
 
 send_keys() {
-  local literal=0 text='' target='' idx
+  local literal=0 text='' target='' pane win
   shift   # drop the subcommand
   printf 'send-keys %s\n' "$*" >> "$S/log"
   while [ $# -gt 0 ]; do
@@ -250,10 +306,11 @@ send_keys() {
       *) text=$1; shift ;;
     esac
   done
-  idx=$(resolve "$target")
+  pane=$(resolve_pane "$target")
+  win=$(win_of_pane "$pane")
   # A send into the watch window's own pane is recorded but changes nothing in
-  # pi's pane: a watcher addressing the wrong window can never be confirmed.
-  if [ "$(win_name "$idx")" = watch ]; then return 0; fi
+  # pi's pane: a watcher addressing the wrong pane can never be confirmed.
+  if [ "$(win_name "$win")" = watch ]; then return 0; fi
   if [ "$literal" = 1 ]; then
     printf '%s' "$text" >> "$S/pane"
     printf '%s' "$text" > "$S/composer"
@@ -296,7 +353,8 @@ case "${1:-}" in
     ;;
   display-message)
     # Formats the watcher asks for: the pinned pane's command (the pi-like
-    # probe) and a window's own index (the pin's verification).
+    # probe), a pane's own id (the pane-target existence probe), and a window's
+    # own index (the pin's verification).
     target='' fmt=''
     while [ $# -gt 0 ]; do
       case $1 in
@@ -306,8 +364,9 @@ case "${1:-}" in
       esac
     done
     case $fmt in
-      *pane_current_command*) win_cmd "$(resolve "$target")" ;;
-      *window_index*) resolve "$target" ;;
+      *pane_current_command*) pane_cmd_of_pane "$(resolve_pane "$target")" ;;
+      *pane_id*) resolve_pane "$target" ;;
+      *window_index*) resolve_window "$target" ;;
       *) : ;;
     esac
     ;;
@@ -325,6 +384,17 @@ case "${1:-}" in
       printf '%s %s\n' "$idx" "$(win_cmd "$idx")"
     done < "$S/windows"
     ;;
+  list-panes)
+    # _sub-common.sh's pane scan asks for the session's panes in its fixed
+    # four-field format; this fake prints exactly that.
+    while [ $# -gt 0 ]; do
+      case $1 in
+        -t|-F) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    panes
+    ;;
   capture-pane)
     target=''
     while [ $# -gt 0 ]; do
@@ -333,7 +403,7 @@ case "${1:-}" in
         *) shift ;;
       esac
     done
-    if [ "$(win_name "$(resolve "$target")")" = watch ]; then
+    if [ "$(win_name "$(win_of_pane "$(resolve_pane "$target")")")" = watch ]; then
       cat "$S/pane-watch"
     else
       capture_pane
@@ -352,7 +422,7 @@ EOS
   printf '%s\n' '1 pi' > "$S/windows"
   printf '%s' '1' > "$S/selected"
   printf '%s\n' ' watching pi-main for free-provider stalls' > "$S/pane-watch"
-  rm -f "$S/cmd"
+  rm -f "$S/cmd" "$S/panes" "$S/active-panes"
   printf '%s' 'fixture-other/baseline-model' > "$S/model"
   printf '%s' 'level-stub' > "$S/level"
   footer_set fixture-other baseline-model level-stub
@@ -623,7 +693,7 @@ t_req8_switches_to_the_configured_fallback() {
   assert_sent ' Enter'
   # The switch is only ever claimed once the status bar shows the id.
   assert_footer "$FB_FOOTER"
-  assert_out "switched =$SESS:1 to fallback model $FB_MODEL"
+  assert_out "switched $PI_PANE to fallback model $FB_MODEL"
 }
 
 # [REQ-9] A pane without a pi error render sees no keys
@@ -655,7 +725,7 @@ t_req10_shell_pane_is_never_typed_into() {
   assert_err_count 'is not running pi' 1
   # No pi-like window exists, so the pin is the FIRST LISTED index (1 here) —
   # never a literal 0, which this base-index-1 session does not have.
-  assert_addressed "=$SESS:1"
+  assert_addressed "$PI_PANE"
   assert_not_addressed "=$SESS:0"
 }
 
@@ -673,8 +743,8 @@ t_req36_pi_like_pane_command_is_recovered() {
   run_watch_in 1
   expect_rc0
   assert_sent "/model $FB_MODEL"
-  assert_out "switched =$SESS:1 to fallback model $FB_MODEL"
-  assert_addressed "=$SESS:1"
+  assert_out "switched $PI_PANE to fallback model $FB_MODEL"
+  assert_addressed "$PI_PANE"
 
   # No window argument: the resolver picks the same window from the list.
   setup
@@ -684,7 +754,7 @@ t_req36_pi_like_pane_command_is_recovered() {
   run_watch
   expect_rc0
   assert_sent "/model $FB_MODEL"
-  assert_addressed "=$SESS:1"
+  assert_addressed "$PI_PANE"
 }
 
 # [REQ-33] The operator selecting another window (here the watch window itself)
@@ -699,10 +769,10 @@ t_req33_selected_other_window_does_not_blind_the_watcher() {
   run_watch
   expect_rc0
   assert_sent "/model $FB_MODEL"
-  assert_out "switched =$SESS:1 to fallback model $FB_MODEL"
+  assert_out "switched $PI_PANE to fallback model $FB_MODEL"
   # It never read or typed into the selected watch window, and never fell back
   # to the selection-following session target.
-  assert_addressed "=$SESS:1"
+  assert_addressed "$PI_PANE"
   assert_not_addressed "=$SESS:"
   assert_not_addressed "=$SESS:2"
 }
@@ -735,7 +805,7 @@ t_req34_unverified_index_is_never_the_pin() {
   expect_rc0
   assert_not_sent "=$SESS:0"
   assert_sent "/model $FB_MODEL"
-  assert_out "switched =$SESS:1 to fallback model $FB_MODEL"
+  assert_out "switched $PI_PANE to fallback model $FB_MODEL"
 }
 
 # [REQ-11] An orchestrator already on the fallback model is not switched
@@ -813,7 +883,7 @@ t_req14_rejected_thinking_degrades_to_a_warning() {
   expect_rc0
   # The model switch alone recovered the session.
   assert_sent "-l /model $FB_MODEL"
-  assert_out "switched =$SESS:1 to fallback model $FB_MODEL"
+  assert_out "switched $PI_PANE to fallback model $FB_MODEL"
   assert_footer "$FB_FOOTER"
   # The level is never claimed, the drift is named as the config problem it is.
   assert_not_out 'thinking level set'
@@ -874,7 +944,7 @@ t_req17_confirmed_switch_wakes_exactly_once() {
   assert_sent '-l Resume the interrupted turn'
   # Nothing else follows the wake: model line, its Enter, the wake, its Enter.
   assert_eq "no keys after the wake" 4 "$(sends_total)"
-  assert_eq "the last key is the wake's Enter" 'send-keys -t =pi-main:1 Enter' \
+  assert_eq "the last key is the wake's Enter" 'send-keys -t %10 Enter' \
     "$(tail -n1 "$FAKE_TMUX_DIR/log")"
 
   setup
@@ -898,8 +968,8 @@ t_req18_only_types_into_the_main_session() {
   assert_sent "-l /model $FB_MODEL"
   while IFS= read -r line; do
     case $line in
-      *"=$SESS:"*) : ;;
-      *) fail "a key went outside $SESS: $line" ;;
+      *"$PI_PANE"*) : ;;
+      *) fail "a key went outside pi's pane of $SESS: $line" ;;
     esac
   done < "$FAKE_TMUX_DIR/log"
   # Never a child pane, never a report to itself (a notice arrives as "[task] ").
@@ -1081,6 +1151,48 @@ t_req32_unchanged_failure_is_rewoken() {
   assert_eq "never a second /thinking" 0 "$(thinking_sends)"
 }
 
+# [REQ-51] The orchestrator window also holds the child-viewer split, and the
+# viewer is the ACTIVE pane while the operator watches a child. A window-level
+# pin would read/type into the viewer (`pane_current_command = tmux`): the
+# watcher must find pi's pane inside the window instead.
+t_req51_pi_pane_beats_the_active_viewer_pane() {
+  setup
+  add_session "$SESS"
+  # Window 1: pane 0 is pi, pane 1 is the attached child viewer; pane 1 is
+  # focused, so tmux's window-level `pane_current_command` says `tmux`.
+  printf '%s\n' "1 0 $PI_PANE pi" "1 1 $VIEWER_PANE tmux" > "$FAKE_TMUX_DIR/panes"
+  printf '%s\n' '1 1' > "$FAKE_TMUX_DIR/active-panes"
+  seed_usage_limit_render
+  run_watch
+  expect_rc0
+  assert_sent "/model $FB_MODEL"
+  assert_out "switched $PI_PANE to fallback model $FB_MODEL"
+  assert_addressed "$PI_PANE"
+  assert_not_addressed "$VIEWER_PANE"
+  assert_eq "a focused viewer pane is not mistaken for a dead pi" 0 \
+    "$(printf '%s' "$WATCH_ERR" | grep -cF 'is not running pi' || true)"
+}
+
+# [REQ-52] The window index start-main passed may hold no pi pane (pi was
+# replaced, or runs in another window). The watcher re-resolves the session's
+# first pi-like pane and follows it rather than staying blind or typing into
+# the pinned non-pi pane.
+t_req52_follows_pi_pane_when_the_pinned_pane_is_not_pi() {
+  setup
+  add_session "$SESS"
+  # Window 1 (the pinned index) holds only a shell; pi runs in window 2.
+  printf '%s\n' '1 0 %10 bash' '2 0 %20 pi' > "$FAKE_TMUX_DIR/panes"
+  printf '%s\n' '1 shell' '2 pi' > "$FAKE_TMUX_DIR/windows"
+  printf '%s' '1' > "$FAKE_TMUX_DIR/selected"
+  seed_usage_limit_render
+  run_watch_in 1
+  expect_rc0
+  assert_sent "/model $FB_MODEL"
+  assert_out "switched %20 to fallback model $FB_MODEL"
+  assert_addressed '%20'
+  assert_not_sent '-t %10'
+}
+
 # ---------------------------------------------------------------------------
 # Supplementary tests (no REQ token): edge cases and error paths
 # ---------------------------------------------------------------------------
@@ -1198,6 +1310,8 @@ run "[REQ-23] The watcher stops when the main session goes away" t_req23_stops_w
 run "[REQ-24] A test scan bound stops the watcher after that many scans" t_req24_scan_bound_stops_the_watcher
 run "[REQ-31] A visible failure while already on the fallback still gets a wake" t_req31_already_on_fallback_still_gets_a_wake
 run "[REQ-32] An unchanged failure is woken again after the rewake interval" t_req32_unchanged_failure_is_rewoken
+run "[REQ-51] The watcher targets the pi pane, not the window's active pane" t_req51_pi_pane_beats_the_active_viewer_pane
+run "[REQ-52] The watcher follows pi's pane when the pinned pane is not pi" t_req52_follows_pi_pane_when_the_pinned_pane_is_not_pi
 run "[supp]  a thinking-level rejection banner is not an incident" t_supp_thinking_rejection_banner_is_not_an_incident
 run "[supp]  an Enter that never lands never claims a switch" t_supp_unreachable_enter_never_claims_a_switch
 run "[supp]  the 429 rate-limit wording is detected on its own" t_supp_429_rate_limit_wording_is_detected
